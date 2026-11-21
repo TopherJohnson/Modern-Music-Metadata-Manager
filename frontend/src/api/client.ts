@@ -5,7 +5,10 @@ import type {
   LibraryResponse,
   MusicBrainzApplyPayload,
   MusicBrainzApplyResponse,
+  MusicBrainzApplyTrackPayload,
+  MusicBrainzApplyTrackResponse,
   MusicBrainzReleaseCandidate,
+  MusicBrainzTrackCandidate,
   NavidromeSyncResult,
   RawTagsResponse,
   TrackMetadata,
@@ -145,6 +148,32 @@ export function applyMusicBrainzRelease(
   payload: MusicBrainzApplyPayload
 ): Promise<MusicBrainzApplyResponse> {
   return requestJson<MusicBrainzApplyResponse>("/api/musicbrainz/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function searchMusicBrainzTrack(
+  title: string,
+  artist?: string,
+  album?: string,
+  duration?: number
+): Promise<MusicBrainzTrackCandidate[]> {
+  const params = new URLSearchParams();
+  if (title.trim()) params.set("title", title.trim());
+  if (artist && artist.trim()) params.set("artist", artist.trim());
+  if (album && album.trim()) params.set("album", album.trim());
+  if (duration && duration > 0) params.set("duration", String(Math.round(duration)));
+  return requestJson<MusicBrainzTrackCandidate[]>(
+    `/api/musicbrainz/search/track?${params.toString()}`
+  );
+}
+
+export function applyMusicBrainzTrack(
+  payload: MusicBrainzApplyTrackPayload
+): Promise<MusicBrainzApplyTrackResponse> {
+  return requestJson<MusicBrainzApplyTrackResponse>("/api/musicbrainz/apply/track", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

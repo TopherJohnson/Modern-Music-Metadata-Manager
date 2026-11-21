@@ -67,6 +67,7 @@ class TrackMetadata(TrackTags):
     artwork_mime: str | None = None
     artwork_hash: str | None = None
     artwork_size: int | None = None
+    missing_fields: list[str] = Field(default_factory=list)
 
 
 class RawTagsResponse(BaseModel):
@@ -188,6 +189,7 @@ class AlbumGroup(BaseModel):
     formats: list[str] = Field(default_factory=list)
     artwork_variants: list[ArtworkVariant] = Field(default_factory=list)
     navidrome_warnings: list[NavidromeSplitWarning] = Field(default_factory=list)
+    has_missing_metadata: bool = False
     tracks: list[TrackMetadata] = Field(default_factory=list)
 
 
@@ -282,6 +284,52 @@ class MusicBrainzApplyRequest(BaseModel):
 
 class MusicBrainzApplyResponse(BulkUpdateResponse):
     """Outcome of applying a MusicBrainz release match."""
+
+    artwork_applied: bool = False
+    artwork_note: str | None = None
+
+
+class MusicBrainzTrackCandidate(BaseModel):
+    """Single-track search candidate pairing a MusicBrainz recording with a specific release."""
+
+    recording_mbid: str
+    release_mbid: str | None = None
+    title: str
+    artist: str
+    artist_mbid: str | None = None
+    album: str | None = None
+    album_artist: str | None = None
+    date: str | None = None
+    year: str | None = None
+    country: str | None = None
+    release_type: str | None = None
+    track_number: str | None = None
+    disc_number: str | None = None
+    length_ms: int | None = None
+    score: int = 0
+    cover_art_url: str | None = None
+
+
+class MusicBrainzApplyTrackRequest(BaseModel):
+    """Apply a chosen MusicBrainz single-track recording/release match onto one audio file."""
+
+    path: str
+    title: str
+    artist: str
+    album_artist: str | None = None
+    album: str | None = None
+    year: str | None = None
+    release_date: str | None = None
+    track_number: str | None = None
+    disc_number: str | None = None
+    release_mbid: str | None = None
+    artist_mbid: str | None = None
+    apply_artwork: bool = True
+    trigger_navidrome_scan: bool = True
+
+
+class MusicBrainzApplyTrackResponse(TrackUpdateResponse):
+    """Outcome of applying a MusicBrainz single-track match."""
 
     artwork_applied: bool = False
     artwork_note: str | None = None

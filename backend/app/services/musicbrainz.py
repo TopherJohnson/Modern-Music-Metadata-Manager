@@ -12,7 +12,12 @@ from typing import Any
 import httpx
 
 from app import __version__
-from app.models import MusicBrainzReleaseCandidate, MusicBrainzReleaseDetail, MusicBrainzTrackInfo
+from app.models import (
+    MusicBrainzReleaseCandidate,
+    MusicBrainzReleaseDetail,
+    MusicBrainzTrackCandidate,
+    MusicBrainzTrackInfo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +246,186 @@ async def search_releases(
         releases = data.get("releases") or []
 
     return [_parse_release_summary(item) for item in releases if item.get("id")]
+
+
+def _release_rank_key(release: dict[str, Any]) -> tuple[int, int, str]:
+    status = (release.get("status") or "").lower()
+    rg = release.get("release-group") or {}
+    primary = (rg.get("primary-type") or "").lower()
+    secondary = {s.lower() for s in (rg.get("secondary-types") or [])}
+
+    status_rank = 0 if status == "official" else 1
+    if primary == "album" and "compilation" not in secondary and "live" not in secondary:
+        type_rank = 0
+    elif primary in {"ep", "single"} and "compilation" not in secondary:
+        type_rank = 1
+    elif primary == "album":
+        type_rank = 2
+    else:
+        type_rank = 3
+    date_str = (release.get("date") or "9999").strip() or "9999"
+    return (status_rank, type_rank, date_str)
+
+
+async def search_recordings(
+    title: str,
+    artist: str | None = None,
+    album: str | None = None,
+    *,
+    duration_sec: float | None = None,
+    limit: int = 12,
+) -> list[MusicBrainzTrackCandidate]:
+    """Search MusicBrainz recordings to identify a single track (including untagged files)."""
+    clauses: list[str] = []
+    if title and title.strip():
+        clauses.append(f'recording:"{_escape_lucene(title)}"')
+    if artist and artist.strip():
+        clauses.append(f'artist:"{_escape_lucene(artist)}"')
+    if album and album.strip():
+        clauses.append(f'release:"{_escape_lucene(album)}"')
+
+    if not clauses:
+        return []
+
+    query = " AND ".join(clauses)
+    data = await _mb_get_json("/recording", {"query": query, "limit": 12})
+    recordings = data.get("recordings") or []
+
+    # Fallback to relaxed unquoted query if strict quoted search found nothing
+    if not recordings:
+        relaxed_parts = [
+            p
+            for p in ((title or "").strip(), (artist or "").strip(), (album or "").strip())
+            if p
+        ]
+        if relaxed_parts:
+            data = await _mb_get_json(
+                "/recording", {"query": " ".join(relaxed_parts), "limit": 12}
+            )
+            recordings = data.get("recordings") or []
+
+    candidates: list[MusicBrainzTrackCandidate] = []
+    seen_pairs: set[tuple[str, str, str]] = set()
+
+    for rec in recordings:
+        rec_id = str(rec.get("id") or "")
+        if not rec_id:
+            continue
+        rec_title = str(rec.get("title") or "Untitled")
+        rec_artist, rec_artist_mbid = _format_artist_credit(rec.get("artist-credit"))
+        length_raw = rec.get("length")
+        length_ms = int(length_raw) if length_raw else None
+        score = int(rec.get("score") or 0)
+
+        releases = list(rec.get("releases") or [])
+        if not releases:
+            candidates.append(
+                MusicBrainzTrackCandidate(
+                    recording_mbid=rec_id,
+                    title=rec_title,
+                    artist=rec_artist,
+                    artist_mbid=rec_artist_mbid,
+                    album_artist=rec_artist,
+                    length_ms=length_ms,
+                    score=score,
+                )
+            )
+            continue
+
+        releases.sort(key=_release_rank_key)
+        emitted_for_rec = 0
+        for rel in releases:
+            if emitted_for_rec >= 2:
+                break
+            rel_id = str(rel.get("id") or "")
+            album_title = (rel.get("title") or "").strip() or None
+            rel_date = (rel.get("date") or "").strip() or None
+            rel_year = _extract_year(rel_date)
+
+            dedup_key = (
+                rec_title.casefold(),
+                rec_artist.casefold(),
+                (album_title or "").casefold(),
+            )
+            if dedup_key in seen_pairs:
+                continue
+            seen_pairs.add(dedup_key)
+
+            rel_artist, rel_artist_mbid = _format_artist_credit(rel.get("artist-credit"))
+            album_artist = rel_artist if rel_artist != "Unknown Artist" else rec_artist
+            artist_mbid = rel_artist_mbid or rec_artist_mbid
+
+            rg = rel.get("release-group") or {}
+            primary_type = (rg.get("primary-type") or "").strip() or None
+            secondary_types = rg.get("secondary-types") or []
+            release_type = (
+                f"{primary_type} ({secondary_types[0]})"
+                if primary_type and secondary_types
+                else primary_type
+            )
+
+            track_num_str: str | None = None
+            disc_num_str: str | None = None
+            media = rel.get("media") or []
+            disc_total = len(media) if media else 1
+            if media:
+                med = media[0]
+                disc_pos = int(med.get("position") or 1)
+                disc_num_str = f"{disc_pos}/{disc_total}" if disc_total > 1 else str(disc_pos)
+                track_total = int(med.get("track-count") or 0)
+                tracks_in_med = med.get("track") or []
+                if tracks_in_med:
+                    t_num = str(
+                        tracks_in_med[0].get("number")
+                        or tracks_in_med[0].get("position")
+                        or ""
+                    ).strip()
+                    if t_num:
+                        track_num_str = (
+                            f"{t_num}/{track_total}"
+                            if track_total > 0 and "/" not in t_num
+                            else t_num
+                        )
+
+            candidates.append(
+                MusicBrainzTrackCandidate(
+                    recording_mbid=rec_id,
+                    release_mbid=rel_id or None,
+                    title=rec_title,
+                    artist=rec_artist,
+                    artist_mbid=artist_mbid,
+                    album=album_title,
+                    album_artist=album_artist,
+                    date=rel_date,
+                    year=rel_year,
+                    country=(rel.get("country") or "").strip() or None,
+                    release_type=release_type,
+                    track_number=track_num_str,
+                    disc_number=disc_num_str,
+                    length_ms=length_ms,
+                    score=score,
+                    cover_art_url=(
+                        f"/api/musicbrainz/cover/{rel_id}?size=500" if rel_id else None
+                    ),
+                )
+            )
+            emitted_for_rec += 1
+
+    # Boost matches whose duration closely matches the local audio file
+    def sort_key(c: MusicBrainzTrackCandidate) -> tuple[int, int, int]:
+        duration_close = 1
+        if duration_sec and duration_sec > 0 and c.length_ms:
+            diff = abs((c.length_ms / 1000.0) - duration_sec)
+            duration_close = 0 if diff <= 5.0 else 1
+        is_studio_album = (
+            0
+            if (c.release_type or "").lower() == "album"
+            else 1
+        )
+        return (duration_close, -c.score, is_studio_album)
+
+    candidates.sort(key=sort_key)
+    return candidates[:limit]
 
 
 async def get_release_detail(mbid: str) -> MusicBrainzReleaseDetail:

@@ -68,15 +68,66 @@ def _collect_artwork_variants(tracks: list[TrackMetadata]) -> list[ArtworkVarian
     return variants
 
 
+def _compute_missing_fields(track: TrackMetadata) -> list[str]:
+    missing: list[str] = []
+    if not (track.title or "").strip():
+        missing.append("title")
+    if not (track.artist or track.album_artist or "").strip():
+        missing.append("artist")
+    if not (track.album or "").strip():
+        missing.append("album")
+    return missing
+
+
 def _detect_navidrome_warnings(
     tracks: list[TrackMetadata],
     artwork_variants: list[ArtworkVariant],
 ) -> list[NavidromeSplitWarning]:
-    """Detect tag discrepancies that cause Navidrome's default PID.Album rule to split an album."""
-    if len(tracks) <= 1:
+    """Detect major missing metadata and Navidrome PID.Album split-album discrepancies."""
+    if not tracks:
         return []
 
     warnings: list[NavidromeSplitWarning] = []
+
+    # 1. Major missing metadata checks (apply even to 1-track / stray files)
+    missing_artist = sum(1 for t in tracks if not (t.artist or t.album_artist or "").strip())
+    missing_album = sum(1 for t in tracks if not (t.album or "").strip())
+    missing_title = sum(1 for t in tracks if not (t.title or "").strip())
+
+    if missing_artist > 0:
+        warnings.append(
+            NavidromeSplitWarning(
+                field="artist",
+                label="Missing Artist",
+                severity="missing",
+                message=f"{missing_artist} of {len(tracks)} track{'s' if len(tracks) != 1 else ''} missing Artist / Album Artist tags (listed under Unknown Artist).",
+                values=[],
+            )
+        )
+    if missing_album > 0:
+        warnings.append(
+            NavidromeSplitWarning(
+                field="album",
+                label="Missing Album",
+                severity="missing",
+                message=f"{missing_album} of {len(tracks)} track{'s' if len(tracks) != 1 else ''} missing an Album tag (listed under Unknown Album).",
+                values=[],
+            )
+        )
+    if missing_title > 0:
+        warnings.append(
+            NavidromeSplitWarning(
+                field="title",
+                label="Missing Track Title",
+                severity="missing",
+                message=f"{missing_title} of {len(tracks)} track{'s' if len(tracks) != 1 else ''} missing a Title tag.",
+                values=[],
+            )
+        )
+
+    # Multi-track album consistency checks only apply when 2+ tracks are grouped together
+    if len(tracks) <= 1:
+        return warnings
 
     def check_field(field: str, label: str, reason: str) -> None:
         raw_vals = [(getattr(t, field) or "").strip() for t in tracks]
@@ -303,6 +354,9 @@ def build_library_response(
                     t.filename.casefold(),
                 ),
             )
+            for track in sorted_tracks:
+                track.missing_fields = _compute_missing_fields(track)
+
             years = sorted({t.year for t in sorted_tracks if t.year})
             genres = sorted({t.genre for t in sorted_tracks if t.genre})
             formats = sorted({t.format for t in sorted_tracks if t.format})
@@ -312,6 +366,9 @@ def build_library_response(
             )
             navidrome_warnings = _detect_navidrome_warnings(
                 sorted_tracks, artwork_variants
+            )
+            has_missing_metadata = any(
+                w.severity == "missing" for w in navidrome_warnings
             )
             album_duration = round(sum(t.duration for t in sorted_tracks), 2)
 
@@ -328,6 +385,7 @@ def build_library_response(
                     formats=formats,
                     artwork_variants=artwork_variants,
                     navidrome_warnings=navidrome_warnings,
+                    has_missing_metadata=has_missing_metadata,
                     tracks=sorted_tracks,
                 )
             )

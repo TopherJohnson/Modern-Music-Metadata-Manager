@@ -1,4 +1,5 @@
 import {
+  AlertOctagon,
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
@@ -13,12 +14,14 @@ import {
 import { formatDuration, getArtworkUrl } from "../api/client";
 import type { AlbumGroup, ArtistGroup, TrackMetadata } from "../types/music";
 
+export type AlbumFilterMode = "all" | "mismatches" | "missing";
+
 interface TrackListProps {
   artists: ArtistGroup[];
   selectedAlbum: AlbumGroup | null;
   selectedTrackPath: string | null;
   isBulkEditingAlbum: boolean;
-  onlyMismatches: boolean;
+  albumFilter: AlbumFilterMode;
   artworkRevision: number;
   loading: boolean;
   musicDir: string;
@@ -27,7 +30,8 @@ interface TrackListProps {
   onSelectTrack: (track: TrackMetadata) => void;
   onStartBulkEdit: (album: AlbumGroup) => void;
   onIdentifyAlbum: (album: AlbumGroup) => void;
-  onToggleOnlyMismatches: () => void;
+  onIdentifyTrack: (track: TrackMetadata) => void;
+  onChangeAlbumFilter: (filter: AlbumFilterMode) => void;
   onRescan: () => void;
 }
 
@@ -61,12 +65,18 @@ function AlbumCover({
   );
 }
 
+function hasMismatchWarning(album: AlbumGroup): boolean {
+  return album.navidrome_warnings.some(
+    (w) => w.severity === "split" || w.severity === "artwork"
+  );
+}
+
 export function TrackList({
   artists,
   selectedAlbum,
   selectedTrackPath,
   isBulkEditingAlbum,
-  onlyMismatches,
+  albumFilter,
   artworkRevision,
   loading,
   musicDir,
@@ -75,7 +85,8 @@ export function TrackList({
   onSelectTrack,
   onStartBulkEdit,
   onIdentifyAlbum,
-  onToggleOnlyMismatches,
+  onIdentifyTrack,
+  onChangeAlbumFilter,
   onRescan,
 }: TrackListProps) {
   if (loading) {
@@ -122,12 +133,23 @@ export function TrackList({
   }
 
   if (!selectedAlbum) {
-    const mismatchedCount = allAlbums.filter(
-      ({ album }) => album.navidrome_warnings.length > 0
+    const missingCount = allAlbums.filter(
+      ({ album }) => album.has_missing_metadata
     ).length;
-    const visibleAlbums = onlyMismatches
-      ? allAlbums.filter(({ album }) => album.navidrome_warnings.length > 0)
-      : allAlbums;
+    const mismatchedCount = allAlbums.filter(({ album }) =>
+      hasMismatchWarning(album)
+    ).length;
+
+    const visibleAlbums =
+      albumFilter === "missing"
+        ? allAlbums.filter(({ album }) => album.has_missing_metadata)
+        : albumFilter === "mismatches"
+          ? allAlbums.filter(({ album }) => hasMismatchWarning(album))
+          : allAlbums;
+
+    const toggleFilter = (target: Exclude<AlbumFilterMode, "all">) => {
+      onChangeAlbumFilter(albumFilter === target ? "all" : target);
+    };
 
     return (
       <main className="flex-1 overflow-y-auto bg-canvas p-6">
@@ -141,33 +163,69 @@ export function TrackList({
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Red Filter: Major Metadata Missing */}
+            <button
+              id="filter-missing-metadata-toggle"
+              type="button"
+              role="switch"
+              aria-checked={albumFilter === "missing"}
+              onClick={() => toggleFilter("missing")}
+              className={`inline-flex h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium transition-colors cursor-pointer ${
+                albumFilter === "missing"
+                  ? "border-danger bg-danger/15 text-danger"
+                  : "border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
+              }`}
+              title="Show only albums or tracks missing Title, Artist, or Album tags"
+            >
+              <AlertOctagon
+                className={`h-3.5 w-3.5 ${
+                  albumFilter === "missing" || missingCount > 0
+                    ? "text-danger"
+                    : "text-ink-muted"
+                }`}
+              />
+              <span>Major Metadata Missing</span>
+              <span
+                className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${
+                  albumFilter === "missing"
+                    ? "bg-danger text-white font-semibold"
+                    : missingCount > 0
+                      ? "bg-danger/15 text-danger"
+                      : "bg-surface-elevated text-ink-muted"
+                }`}
+              >
+                {missingCount}
+              </span>
+            </button>
+
+            {/* Amber Filter: Mismatches Only */}
             <button
               id="filter-mismatches-toggle"
               type="button"
               role="switch"
-              aria-checked={onlyMismatches}
-              onClick={onToggleOnlyMismatches}
+              aria-checked={albumFilter === "mismatches"}
+              onClick={() => toggleFilter("mismatches")}
               className={`inline-flex h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium transition-colors cursor-pointer ${
-                onlyMismatches
+                albumFilter === "mismatches"
                   ? "border-accent bg-accent-soft text-accent"
                   : "border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
               }`}
-              title="Show only albums with Navidrome tag or cover art mismatches"
+              title="Show only albums with Navidrome split-album tag or cover art mismatches"
             >
               <AlertTriangle
                 className={`h-3.5 w-3.5 ${
-                  onlyMismatches
+                  albumFilter === "mismatches"
                     ? "text-accent"
                     : mismatchedCount > 0
                       ? "text-warn"
                       : "text-ink-muted"
                 }`}
               />
-              <span>Mismatches only</span>
+              <span>Mismatches</span>
               <span
                 className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${
-                  onlyMismatches
+                  albumFilter === "mismatches"
                     ? "bg-accent text-[#14110c] font-semibold"
                     : mismatchedCount > 0
                       ? "bg-surface-elevated text-warn"
@@ -178,25 +236,29 @@ export function TrackList({
               </span>
             </button>
 
-            <span className="font-mono text-xs text-ink-muted">
+            <span className="ml-1 font-mono text-xs text-ink-muted">
               {visibleAlbums.length}{" "}
               {visibleAlbums.length === 1 ? "album" : "albums"}
             </span>
           </div>
         </div>
 
-        {visibleAlbums.length === 0 && onlyMismatches ? (
+        {visibleAlbums.length === 0 && albumFilter !== "all" ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-border-subtle bg-surface/60 px-6 py-14 text-center">
             <CheckCircle2 className="h-8 w-8 text-ok" />
             <h3 className="mt-3 text-sm font-semibold text-ink-primary">
-              All albums look clean
+              {albumFilter === "missing"
+                ? "No tracks missing major metadata"
+                : "All albums look clean"}
             </h3>
             <p className="mt-1 max-w-xs text-xs text-ink-secondary">
-              No Navidrome split-album tag mismatches or inconsistent album covers detected.
+              {albumFilter === "missing"
+                ? "Every track in your library has Title, Artist, and Album tags populated."
+                : "No Navidrome split-album tag mismatches or inconsistent album covers detected."}
             </p>
             <button
               type="button"
-              onClick={onToggleOnlyMismatches}
+              onClick={() => onChangeAlbumFilter("all")}
               className="m4-btn-secondary mt-4"
             >
               Show All Albums ({allAlbums.length})
@@ -214,7 +276,11 @@ export function TrackList({
                   key={album.id}
                   type="button"
                   onClick={() => onSelectAlbum(artist, album)}
-                  className="group relative flex flex-col rounded-xl border border-border-subtle bg-surface p-3 text-left transition-colors hover:border-border-strong hover:bg-surface-elevated cursor-pointer"
+                  className={`group relative flex flex-col rounded-xl border bg-surface p-3 text-left transition-colors hover:bg-surface-elevated cursor-pointer ${
+                    album.has_missing_metadata
+                      ? "border-danger/45 hover:border-danger/70"
+                      : "border-border-subtle hover:border-border-strong"
+                  }`}
                 >
                   <div className="relative aspect-square w-full overflow-hidden rounded-lg">
                     <AlbumCover
@@ -223,23 +289,36 @@ export function TrackList({
                       revision={artworkRevision}
                       sizeClass="h-full w-full transition-transform duration-200 group-hover:scale-[1.02]"
                     />
-                    {(splitCount > 0 || multiCovers) && (
-                      <div
-                        className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-border-strong bg-canvas/90 px-1.5 py-0.5 text-[10px] font-medium text-warn backdrop-blur-xs"
-                        title={
-                          splitCount > 0
-                            ? `${splitCount} Navidrome split-album tag mismatch(es)`
-                            : `${album.artwork_variants.length} distinct cover images`
-                        }
-                      >
-                        {splitCount > 0 ? (
-                          <AlertTriangle className="h-3 w-3" />
-                        ) : (
-                          <Images className="h-3 w-3" />
-                        )}
-                        {splitCount > 0 ? splitCount : album.artwork_variants.length}
-                      </div>
-                    )}
+
+                    {/* Top-right status badges: Red for Major Missing Metadata, Amber for Mismatch */}
+                    <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
+                      {album.has_missing_metadata && (
+                        <div
+                          className="flex items-center gap-1 rounded-md border border-danger/60 bg-danger/90 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm"
+                          title="Major metadata missing (Title, Artist, or Album)"
+                        >
+                          <AlertOctagon className="h-3 w-3" />
+                          Missing
+                        </div>
+                      )}
+                      {(splitCount > 0 || multiCovers) && (
+                        <div
+                          className="flex items-center gap-1 rounded-md border border-border-strong bg-canvas/90 px-1.5 py-0.5 text-[10px] font-medium text-warn backdrop-blur-xs"
+                          title={
+                            splitCount > 0
+                              ? `${splitCount} Navidrome split-album tag mismatch(es)`
+                              : `${album.artwork_variants.length} distinct cover images`
+                          }
+                        >
+                          {splitCount > 0 ? (
+                            <AlertTriangle className="h-3 w-3" />
+                          ) : (
+                            <Images className="h-3 w-3" />
+                          )}
+                          {splitCount > 0 ? splitCount : album.artwork_variants.length}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="mt-3 min-w-0">
                     <p className="truncate text-xs font-semibold text-ink-primary group-hover:text-accent transition-colors">
@@ -266,6 +345,9 @@ export function TrackList({
     );
   }
 
+  const missingWarnings = selectedAlbum.navidrome_warnings.filter(
+    (w) => w.severity === "missing"
+  );
   const splitWarnings = selectedAlbum.navidrome_warnings.filter(
     (w) => w.severity === "split"
   );
@@ -351,11 +433,51 @@ export function TrackList({
           </div>
         </div>
 
-        {/* Navidrome Grouping & Artwork Diagnostics */}
-        {selectedAlbum.navidrome_warnings.length > 0 && (
+        {/* Red Diagnostic Banner: Major Metadata Missing */}
+        {missingWarnings.length > 0 && (
+          <div
+            id="missing-metadata-banner"
+            className="mt-4 rounded-xl border border-danger/50 bg-danger/10 px-4 py-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <AlertOctagon className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+                <div className="min-w-0 space-y-1">
+                  <p className="text-xs font-semibold text-ink-primary">
+                    Major Metadata Missing
+                  </p>
+                  <ul className="space-y-0.5 text-[11px] text-ink-secondary">
+                    {missingWarnings.map((warning, idx) => (
+                      <li key={`missing-${warning.field}-${idx}`}>
+                        <span className="font-medium text-ink-primary">
+                          {warning.label}:
+                        </span>{" "}
+                        {warning.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {selectedAlbum.tracks.length === 1 && (
+                <button
+                  type="button"
+                  onClick={() => onIdentifyTrack(selectedAlbum.tracks[0])}
+                  className="m4-btn-primary shrink-0 h-7 px-2.5 text-[11px]"
+                >
+                  <Globe className="h-3 w-3" />
+                  Identify Track
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Amber Diagnostic Banner: Navidrome Split-Album Risk & Artwork Mismatches */}
+        {(splitWarnings.length > 0 || artworkWarnings.length > 0) && (
           <div
             id="navidrome-diagnostics-banner"
-            className="mt-4 rounded-xl border border-border-strong bg-canvas/80 px-4 py-3"
+            className="mt-3 rounded-xl border border-border-strong bg-canvas/80 px-4 py-3"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-2.5 min-w-0">
@@ -427,6 +549,7 @@ export function TrackList({
             {selectedAlbum.tracks.map((track) => {
               const isSelected =
                 !isBulkEditingAlbum && selectedTrackPath === track.path;
+              const isMissingMajor = track.missing_fields.length > 0;
               const discPrefix =
                 track.disc_number && track.disc_number !== "1" && track.disc_number !== "1/1"
                   ? `${track.disc_number.split("/")[0]}-`
@@ -449,26 +572,50 @@ export function TrackList({
                     {trackNumLabel}
                   </td>
                   <td className="py-2.5 px-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Music
-                        className={`h-3.5 w-3.5 shrink-0 ${
-                          isSelected ? "text-accent" : "text-ink-muted/60"
-                        }`}
-                      />
-                      <div className="min-w-0">
-                        <p
-                          className={`truncate font-medium ${
-                            isSelected ? "text-accent" : "text-ink-primary"
-                          }`}
-                        >
-                          {track.title || track.filename}
-                        </p>
-                        {!track.title && (
-                          <p className="truncate font-mono text-[10px] text-ink-muted">
-                            (untagged filename)
-                          </p>
+                    <div className="flex items-center justify-between gap-2 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {isMissingMajor ? (
+                          <AlertOctagon
+                            className="h-3.5 w-3.5 shrink-0 text-danger"
+                            aria-label="Missing major metadata"
+                          />
+                        ) : (
+                          <Music
+                            className={`h-3.5 w-3.5 shrink-0 ${
+                              isSelected ? "text-accent" : "text-ink-muted/60"
+                            }`}
+                          />
                         )}
+                        <div className="min-w-0">
+                          <p
+                            className={`truncate font-medium ${
+                              isSelected ? "text-accent" : "text-ink-primary"
+                            }`}
+                          >
+                            {track.title || track.filename}
+                          </p>
+                          {isMissingMajor && (
+                            <p className="truncate font-mono text-[10px] text-danger">
+                              Missing: {track.missing_fields.join(", ")}
+                            </p>
+                          )}
+                        </div>
                       </div>
+
+                      {isMissingMajor && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onIdentifyTrack(track);
+                          }}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border-strong bg-surface-elevated px-2 py-1 text-[10px] font-medium text-accent hover:border-accent/60 hover:bg-surface-hover cursor-pointer"
+                          title="Identify this track via MusicBrainz"
+                        >
+                          <Globe className="h-3 w-3" />
+                          Identify
+                        </button>
+                      )}
                     </div>
                   </td>
                   <td className="hidden md:table-cell py-2.5 px-2 truncate max-w-[180px] text-ink-secondary">

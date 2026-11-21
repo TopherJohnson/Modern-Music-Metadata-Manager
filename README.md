@@ -101,8 +101,10 @@ Modern-Music-Metadata-Manager/
 | `GET` | `/api/history` | Inspect recent metadata edit audit history stored in `/config/m4.db` |
 | `POST` | `/api/navidrome/scan` | Manually trigger a Navidrome Subsonic `startScan` |
 | `GET` | `/api/musicbrainz/search` | Search MusicBrainz releases by album & artist |
+| `GET` | `/api/musicbrainz/search/track` | Search MusicBrainz recordings to identify a single untagged track |
 | `GET` | `/api/musicbrainz/cover/{mbid}` | Proxy Cover Art Archive front cover preview |
 | `POST` | `/api/musicbrainz/apply` | Apply a chosen MusicBrainz release's tags and/or cover art to an album |
+| `POST` | `/api/musicbrainz/apply/track` | Apply a chosen MusicBrainz recording/release match to a single track |
 
 ---
 

@@ -418,3 +418,116 @@ def test_musicbrainz_search_and_apply(
     assert all(t["has_artwork"] for t in body["updated"])
 
 
+def test_missing_major_metadata_and_single_track_identify(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models import MusicBrainzReleaseDetail, MusicBrainzTrackCandidate
+    from app.routers import musicbrainz as mb_router
+
+    # Drop a completely untagged MP3 file into /music
+    music_dir = client.app.state.settings.music_dir
+    stray = music_dir / "01 - The Black Keys - Lonely Boy.mp3"
+    stray.write_bytes((b"\xff\xfb\x90\x00" + b"\x00" * 413) * 4)
+
+    lib = client.get("/api/library").json()
+    unknown_artist = next(a for a in lib["artists"] if a["name"] == "Unknown Artist")
+    unknown_album = unknown_artist["albums"][0]
+    assert unknown_album["title"] == "Unknown Album"
+    assert unknown_album["has_missing_metadata"] is True
+    assert any(w["severity"] == "missing" for w in unknown_album["navidrome_warnings"])
+    stray_track = unknown_album["tracks"][0]
+    assert set(stray_track["missing_fields"]) == {"title", "artist", "album"}
+
+    # Mock single-track MusicBrainz recording search + apply
+    rel_mbid = "99999999-8888-7777-6666-555555555555"
+    artist_mbid = "22222222-3333-4444-5555-666666666666"
+
+    async def fake_search_recordings(
+        title: str,
+        artist: str | None = None,
+        album: str | None = None,
+        duration_sec: float | None = None,
+        limit: int = 12,
+    ):
+        return [
+            MusicBrainzTrackCandidate(
+                recording_mbid="rec-123",
+                release_mbid=rel_mbid,
+                title="Lonely Boy",
+                artist="The Black Keys",
+                artist_mbid=artist_mbid,
+                album="El Camino",
+                album_artist="The Black Keys",
+                date="2011-12-06",
+                year="2011",
+                country="US",
+                release_type="Album",
+                track_number="1/11",
+                disc_number="1",
+                length_ms=193000,
+                score=100,
+                cover_art_url=f"/api/musicbrainz/cover/{rel_mbid}?size=500",
+            )
+        ]
+
+    async def fake_detail(mbid: str):
+        return MusicBrainzReleaseDetail(
+            mbid=mbid,
+            title="El Camino",
+            artist="The Black Keys",
+            artist_mbid=artist_mbid,
+            date="2011-12-06",
+            year="2011",
+            genre="Garage Rock",
+            compilation=False,
+            cover_art_url=f"/api/musicbrainz/cover/{mbid}?size=500",
+        )
+
+    async def fake_cover(mbid: str, size: int | None = 1200):
+        return TINY_PNG, "image/png"
+
+    monkeypatch.setattr(mb_router, "search_recordings", fake_search_recordings)
+    monkeypatch.setattr(mb_router, "get_release_detail", fake_detail)
+    monkeypatch.setattr(mb_router, "fetch_cover_art", fake_cover)
+
+    search_res = client.get(
+        "/api/musicbrainz/search/track",
+        params={"title": "Lonely Boy", "artist": "The Black Keys"},
+    )
+    assert search_res.status_code == 200
+    cand = search_res.json()[0]
+    assert cand["album"] == "El Camino"
+
+    apply_res = client.post(
+        "/api/musicbrainz/apply/track",
+        json={
+            "path": stray_track["path"],
+            "title": cand["title"],
+            "artist": cand["artist"],
+            "album_artist": cand["album_artist"],
+            "album": cand["album"],
+            "year": cand["year"],
+            "release_date": cand["date"],
+            "track_number": cand["track_number"],
+            "disc_number": cand["disc_number"],
+            "release_mbid": cand["release_mbid"],
+            "artist_mbid": cand["artist_mbid"],
+            "apply_artwork": True,
+        },
+    )
+    assert apply_res.status_code == 200
+    body = apply_res.json()
+    assert body["artwork_applied"] is True
+    assert body["track"]["title"] == "Lonely Boy"
+    assert body["track"]["album"] == "El Camino"
+    assert body["track"]["genre"] == "Garage Rock"
+    assert body["track"]["missing_fields"] == []
+
+    # Confirm it moved out of Unknown Artist and no longer has missing-metadata flags
+    lib_after = client.get("/api/library").json()
+    assert all(a["name"] != "Unknown Artist" for a in lib_after["artists"])
+    tbk = next(a for a in lib_after["artists"] if a["name"] == "The Black Keys")
+    assert tbk["albums"][0]["has_missing_metadata"] is False
+
+
+

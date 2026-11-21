@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyMusicBrainzRelease,
+  applyMusicBrainzTrack,
   copyArtwork,
   deleteArtwork,
   getHealth,
@@ -18,15 +19,17 @@ import {
   MusicBrainzModal,
   type MusicBrainzModalMode,
 } from "./components/MusicBrainzModal";
+import { MusicBrainzTrackModal } from "./components/MusicBrainzTrackModal";
 import { Sidebar } from "./components/Sidebar";
 import { Toast, type ToastMessage } from "./components/Toast";
-import { TrackList } from "./components/TrackList";
+import { TrackList, type AlbumFilterMode } from "./components/TrackList";
 import type {
   AlbumGroup,
   ArtistGroup,
   HealthResponse,
   LibraryResponse,
   MusicBrainzApplyPayload,
+  MusicBrainzApplyTrackPayload,
   NavidromeSyncResult,
   TrackMetadata,
   TrackTags,
@@ -64,7 +67,7 @@ export function App() {
   const [selectedTrackPath, setSelectedTrackPath] = useState<string | null>(null);
   const [liveTrack, setLiveTrack] = useState<TrackMetadata | null>(null);
   const [isBulkMode, setIsBulkMode] = useState(false);
-  const [onlyMismatches, setOnlyMismatches] = useState(false);
+  const [albumFilter, setAlbumFilter] = useState<AlbumFilterMode>("all");
 
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -74,6 +77,7 @@ export function App() {
   const [artworkRevision, setArtworkRevision] = useState(1);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [applyingMb, setApplyingMb] = useState(false);
+  const [trackMbTarget, setTrackMbTarget] = useState<TrackMetadata | null>(null);
   const [mbModal, setMbModal] = useState<{
     open: boolean;
     mode: MusicBrainzModalMode;
@@ -475,6 +479,55 @@ export function App() {
     }
   };
 
+  const handleIdentifyTrack = (track: TrackMetadata) => {
+    setSelectedTrackPath(track.path);
+    setLiveTrack(track);
+    setIsBulkMode(false);
+    setTrackMbTarget(track);
+  };
+
+  const handleApplyMusicBrainzTrack = async (
+    payload: MusicBrainzApplyTrackPayload
+  ) => {
+    setApplyingMb(true);
+    try {
+      const response = await applyMusicBrainzTrack(payload);
+      setLiveTrack(response.track);
+      setSelectedTrackPath(response.track.path);
+      setArtworkRevision((r) => r + 1);
+      const updatedLib = await fetchLibrary(debouncedQuery, { silent: true });
+      if (updatedLib) {
+        const relocated = findAlbumAndTrackByPath(
+          updatedLib.artists,
+          response.track.path
+        );
+        if (relocated) {
+          setSelectedAlbumId(relocated.album.id);
+        }
+      }
+      setTrackMbTarget(null);
+
+      const details = [
+        response.artwork_note,
+        formatNavidromeNote(response.navidrome_sync),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      showToast(
+        "success",
+        `Identified "${response.track.title || response.track.filename}"`,
+        details || undefined
+      );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not apply MusicBrainz track match";
+      showToast("error", "Track identification failed", msg);
+    } finally {
+      setApplyingMb(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col bg-canvas text-ink-primary">
       <Header
@@ -502,7 +555,7 @@ export function App() {
           selectedAlbum={selectedAlbum}
           selectedTrackPath={selectedTrackPath}
           isBulkEditingAlbum={isBulkMode}
-          onlyMismatches={onlyMismatches}
+          albumFilter={albumFilter}
           artworkRevision={artworkRevision}
           loading={loading}
           musicDir={health?.music_dir ?? "/music"}
@@ -511,7 +564,8 @@ export function App() {
           onSelectTrack={handleSelectTrack}
           onStartBulkEdit={handleStartBulkEdit}
           onIdentifyAlbum={handleIdentifyAlbum}
-          onToggleOnlyMismatches={() => setOnlyMismatches((v) => !v)}
+          onIdentifyTrack={handleIdentifyTrack}
+          onChangeAlbumFilter={setAlbumFilter}
           onRescan={handleRescan}
         />
 
@@ -528,6 +582,7 @@ export function App() {
           onCopyArtwork={handleCopyArtwork}
           onDeleteArtwork={handleDeleteArtwork}
           onOpenMusicBrainz={handleOpenMusicBrainz}
+          onIdentifyTrack={handleIdentifyTrack}
         />
       </div>
 
@@ -541,6 +596,13 @@ export function App() {
         applying={applyingMb}
         onClose={() => setMbModal((prev) => ({ ...prev, open: false }))}
         onApply={handleApplyMusicBrainz}
+      />
+
+      <MusicBrainzTrackModal
+        track={trackMbTarget}
+        applying={applyingMb}
+        onClose={() => setTrackMbTarget(null)}
+        onApply={handleApplyMusicBrainzTrack}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />

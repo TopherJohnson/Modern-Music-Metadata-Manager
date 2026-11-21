@@ -471,6 +471,14 @@ def read_track_metadata(music_dir: Path, rel_path: str) -> TrackMetadata:
     sample_rate_raw = getattr(info, "sample_rate", None)
     sample_rate = int(sample_rate_raw) if sample_rate_raw else None
 
+    missing_fields: list[str] = []
+    if not tags.get("title"):
+        missing_fields.append("title")
+    if not (tags.get("artist") or tags.get("album_artist")):
+        missing_fields.append("artist")
+    if not tags.get("album"):
+        missing_fields.append("album")
+
     return TrackMetadata(
         path=normalized_rel,
         filename=file_path.name,
@@ -484,6 +492,7 @@ def read_track_metadata(music_dir: Path, rel_path: str) -> TrackMetadata:
         artwork_mime=artwork_mime,
         artwork_hash=artwork_hash,
         artwork_size=artwork_size,
+        missing_fields=missing_fields,
         **tags,
     )
 

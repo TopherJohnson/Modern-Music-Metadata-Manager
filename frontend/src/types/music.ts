@@ -44,6 +44,7 @@ export interface TrackMetadata extends TrackTags {
   artwork_mime: string | null;
   artwork_hash: string | null;
   artwork_size: number | null;
+  missing_fields: string[];
 }
 
 export interface RawTagsResponse {
@@ -64,7 +65,7 @@ export interface ArtworkVariant {
 export interface NavidromeSplitWarning {
   field: string;
   label: string;
-  severity: "split" | "artwork" | string;
+  severity: "missing" | "split" | "artwork" | string;
   message: string;
   values: string[];
 }
@@ -81,6 +82,7 @@ export interface AlbumGroup {
   formats: string[];
   artwork_variants: ArtworkVariant[];
   navidrome_warnings: NavidromeSplitWarning[];
+  has_missing_metadata: boolean;
   tracks: TrackMetadata[];
 }
 
@@ -179,6 +181,46 @@ export interface MusicBrainzApplyPayload {
 }
 
 export interface MusicBrainzApplyResponse extends BulkUpdateResponse {
+  artwork_applied: boolean;
+  artwork_note: string | null;
+}
+
+export interface MusicBrainzTrackCandidate {
+  recording_mbid: string;
+  release_mbid: string | null;
+  title: string;
+  artist: string;
+  artist_mbid: string | null;
+  album: string | null;
+  album_artist: string | null;
+  date: string | null;
+  year: string | null;
+  country: string | null;
+  release_type: string | null;
+  track_number: string | null;
+  disc_number: string | null;
+  length_ms: number | null;
+  score: number;
+  cover_art_url: string | null;
+}
+
+export interface MusicBrainzApplyTrackPayload {
+  path: string;
+  title: string;
+  artist: string;
+  album_artist?: string | null;
+  album?: string | null;
+  year?: string | null;
+  release_date?: string | null;
+  track_number?: string | null;
+  disc_number?: string | null;
+  release_mbid?: string | null;
+  artist_mbid?: string | null;
+  apply_artwork: boolean;
+  trigger_navidrome_scan?: boolean;
+}
+
+export interface MusicBrainzApplyTrackResponse extends TrackUpdateResponse {
   artwork_applied: boolean;
   artwork_note: string | null;
 }

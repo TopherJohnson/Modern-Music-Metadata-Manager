@@ -8,14 +8,18 @@ from app.models import (
     BulkUpdateError,
     MusicBrainzApplyRequest,
     MusicBrainzApplyResponse,
+    MusicBrainzApplyTrackRequest,
+    MusicBrainzApplyTrackResponse,
     MusicBrainzReleaseCandidate,
     MusicBrainzReleaseDetail,
+    MusicBrainzTrackCandidate,
     TrackMetadata,
 )
 from app.services.musicbrainz import (
     MusicBrainzError,
     fetch_cover_art,
     get_release_detail,
+    search_recordings,
     search_releases,
 )
 from app.services.navidrome import trigger_navidrome_scan
@@ -191,6 +195,115 @@ async def apply_musicbrainz_release(
     return MusicBrainzApplyResponse(
         updated=updated,
         errors=errors,
+        navidrome_sync=navidrome_sync,
+        artwork_applied=artwork_applied,
+        artwork_note=artwork_note,
+    )
+
+
+@router.get("/search/track", response_model=list[MusicBrainzTrackCandidate])
+async def search_musicbrainz_track(
+    title: str = Query(default="", description="Track title or guessed name from filename"),
+    artist: str | None = Query(default=None, description="Optional artist name"),
+    album: str | None = Query(default=None, description="Optional album name"),
+    duration: float | None = Query(default=None, description="Local track duration in seconds for ranking"),
+    limit: int = Query(default=12, ge=1, le=20),
+) -> list[MusicBrainzTrackCandidate]:
+    """Search MusicBrainz recordings to identify an individual track."""
+    if not (title.strip() or (artist and artist.strip()) or (album and album.strip())):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least a track title, artist, or album to search.",
+        )
+    try:
+        return await search_recordings(
+            title=title,
+            artist=artist,
+            album=album,
+            duration_sec=duration,
+            limit=limit,
+        )
+    except MusicBrainzError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/apply/track", response_model=MusicBrainzApplyTrackResponse)
+async def apply_musicbrainz_track(
+    request: Request,
+    payload: MusicBrainzApplyTrackRequest,
+) -> MusicBrainzApplyTrackResponse:
+    """Apply a MusicBrainz single-track match (metadata + optional cover art) to one audio file."""
+    settings = request.app.state.settings
+    db = request.app.state.db
+
+    updates: dict[str, str | None] = {
+        "title": payload.title,
+        "artist": payload.artist,
+        "album_artist": payload.album_artist or payload.artist,
+        "album": payload.album,
+        "year": payload.year,
+        "release_date": payload.release_date,
+        "track_number": payload.track_number,
+        "disc_number": payload.disc_number,
+        "musicbrainz_album_id": payload.release_mbid,
+        "musicbrainz_album_artist_id": payload.artist_mbid,
+    }
+
+    # If a release MBID was matched, enrich genre / compilation / version gracefully
+    if payload.release_mbid:
+        try:
+            detail = await get_release_detail(payload.release_mbid)
+            if detail.genre:
+                updates["genre"] = detail.genre
+            if detail.disambiguation:
+                updates["album_version"] = detail.disambiguation
+            if detail.compilation:
+                updates["compilation"] = "1"
+        except MusicBrainzError:
+            pass
+
+    try:
+        before, after = write_track_metadata(settings.music_dir, payload.path, updates)
+        db.record_audit(
+            path=after.path,
+            action="musicbrainz_apply_track",
+            before_tags=_tag_snapshot(before),
+            after_tags=_tag_snapshot(after),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Failed to write track tags: {exc}") from exc
+
+    artwork_applied = False
+    artwork_note: str | None = None
+    if payload.apply_artwork and payload.release_mbid:
+        try:
+            cover_result = await fetch_cover_art(payload.release_mbid, size=1200)
+            if cover_result is not None:
+                img_bytes, img_mime = cover_result
+                after = write_track_artwork(
+                    settings.music_dir,
+                    payload.path,
+                    img_bytes,
+                    mime_type=img_mime,
+                )
+                artwork_applied = True
+                db.record_audit(
+                    path=after.path,
+                    action="musicbrainz_artwork",
+                    before_tags={},
+                    after_tags={"mbid": payload.release_mbid, "artwork_hash": after.artwork_hash},
+                )
+            else:
+                artwork_note = "No cover image found on Cover Art Archive for this release."
+        except Exception as exc:
+            artwork_note = f"Tags saved, but cover art failed: {exc}"
+
+    db.upsert_tracks([after])
+    navidrome_sync = await trigger_navidrome_scan(
+        settings, requested=payload.trigger_navidrome_scan
+    )
+    return MusicBrainzApplyTrackResponse(
+        track=after,
         navidrome_sync=navidrome_sync,
         artwork_applied=artwork_applied,
         artwork_note=artwork_note,

@@ -38,6 +38,7 @@ interface MetadataEditorProps {
   onCopyArtwork: (sourcePath: string, targetPaths: string[]) => Promise<void>;
   onDeleteArtwork: (path: string) => Promise<void>;
   onOpenMusicBrainz: (mode: MusicBrainzModalMode, targetPaths: string[]) => void;
+  onIdentifyTrack: (track: TrackMetadata) => void;
 }
 
 interface FieldSpec {
@@ -160,6 +161,7 @@ export function MetadataEditor({
   onCopyArtwork,
   onDeleteArtwork,
   onOpenMusicBrainz,
+  onIdentifyTrack,
 }: MetadataEditorProps) {
   const isBulk = bulkAlbum !== null;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -523,6 +525,50 @@ export function MetadataEditor({
               </div>
               <span className="shrink-0 rounded-md bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">
                 Search
+              </span>
+            </button>
+          )}
+
+          {/* Single-Track MusicBrainz Identification (highlighted when major metadata is missing) */}
+          {!isBulk && selectedTrack && (
+            <button
+              id="identify-track-musicbrainz-btn"
+              type="button"
+              disabled={saving || uploadingArtwork}
+              onClick={() => onIdentifyTrack(selectedTrack)}
+              className={`flex w-full items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors cursor-pointer ${
+                selectedTrack.missing_fields.length > 0
+                  ? "border-danger/50 bg-danger/10 hover:border-danger/80"
+                  : "border-border-strong bg-surface-elevated hover:border-accent/60 hover:bg-surface-hover"
+              }`}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Globe
+                  className={`h-4 w-4 shrink-0 ${
+                    selectedTrack.missing_fields.length > 0
+                      ? "text-danger"
+                      : "text-accent"
+                  }`}
+                />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-ink-primary">
+                    Identify Track via MusicBrainz
+                  </p>
+                  <p className="truncate text-[11px] text-ink-muted">
+                    {selectedTrack.missing_fields.length > 0
+                      ? `Missing ${selectedTrack.missing_fields.join(", ")} — search by filename`
+                      : "Match recording, album info & cover art"}
+                  </p>
+                </div>
+              </div>
+              <span
+                className={`shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                  selectedTrack.missing_fields.length > 0
+                    ? "bg-danger/20 text-danger"
+                    : "bg-accent-soft text-accent"
+                }`}
+              >
+                Identify
               </span>
             </button>
           )}
