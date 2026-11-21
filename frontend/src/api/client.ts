@@ -3,6 +3,9 @@ import type {
   BulkUpdateResponse,
   HealthResponse,
   LibraryResponse,
+  MusicBrainzApplyPayload,
+  MusicBrainzApplyResponse,
+  MusicBrainzReleaseCandidate,
   NavidromeSyncResult,
   RawTagsResponse,
   TrackMetadata,
@@ -122,6 +125,29 @@ export function deleteArtwork(path: string): Promise<TrackUpdateResponse> {
 export function triggerNavidromeScan(): Promise<NavidromeSyncResult> {
   return requestJson<NavidromeSyncResult>("/api/navidrome/scan", {
     method: "POST",
+  });
+}
+
+export function searchMusicBrainz(
+  album: string,
+  artist?: string
+): Promise<MusicBrainzReleaseCandidate[]> {
+  const params = new URLSearchParams({ album: album.trim() });
+  if (artist && artist.trim()) {
+    params.set("artist", artist.trim());
+  }
+  return requestJson<MusicBrainzReleaseCandidate[]>(
+    `/api/musicbrainz/search?${params.toString()}`
+  );
+}
+
+export function applyMusicBrainzRelease(
+  payload: MusicBrainzApplyPayload
+): Promise<MusicBrainzApplyResponse> {
+  return requestJson<MusicBrainzApplyResponse>("/api/musicbrainz/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
 }
 

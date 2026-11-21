@@ -150,3 +150,35 @@ export interface BulkUpdateResponse {
   errors: BulkUpdateError[];
   navidrome_sync: NavidromeSyncResult;
 }
+
+export interface MusicBrainzReleaseCandidate {
+  mbid: string;
+  title: string;
+  artist: string;
+  artist_mbid: string | null;
+  date: string | null;
+  year: string | null;
+  country: string | null;
+  status: string | null;
+  disambiguation: string | null;
+  track_count: number;
+  disc_count: number;
+  format: string | null;
+  label: string | null;
+  score: number;
+  cover_art_url: string;
+}
+
+export interface MusicBrainzApplyPayload {
+  mbid: string;
+  paths: string[];
+  apply_metadata: boolean;
+  apply_artwork: boolean;
+  apply_track_titles: boolean;
+  trigger_navidrome_scan?: boolean;
+}
+
+export interface MusicBrainzApplyResponse extends BulkUpdateResponse {
+  artwork_applied: boolean;
+  artwork_note: string | null;
+}

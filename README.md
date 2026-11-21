@@ -100,6 +100,9 @@ Modern-Music-Metadata-Manager/
 | `DELETE` | `/api/track/artwork?path=` | Remove embedded cover art from a track |
 | `GET` | `/api/history` | Inspect recent metadata edit audit history stored in `/config/m4.db` |
 | `POST` | `/api/navidrome/scan` | Manually trigger a Navidrome Subsonic `startScan` |
+| `GET` | `/api/musicbrainz/search` | Search MusicBrainz releases by album & artist |
+| `GET` | `/api/musicbrainz/cover/{mbid}` | Proxy Cover Art Archive front cover preview |
+| `POST` | `/api/musicbrainz/apply` | Apply a chosen MusicBrainz release's tags and/or cover art to an album |
 
 ---
 

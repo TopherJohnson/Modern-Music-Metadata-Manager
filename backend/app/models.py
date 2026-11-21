@@ -227,3 +227,62 @@ class AuditEntry(BaseModel):
     action: str
     before_tags: dict[str, str | None]
     after_tags: dict[str, str | None]
+
+
+class MusicBrainzReleaseCandidate(BaseModel):
+    """Search result card representing a MusicBrainz release match."""
+
+    mbid: str
+    title: str
+    artist: str
+    artist_mbid: str | None = None
+    date: str | None = None
+    year: str | None = None
+    country: str | None = None
+    status: str | None = None
+    disambiguation: str | None = None
+    track_count: int = 0
+    disc_count: int = 1
+    format: str | None = None
+    label: str | None = None
+    score: int = 0
+    cover_art_url: str
+
+
+class MusicBrainzTrackInfo(BaseModel):
+    """Track entry returned by MusicBrainz release lookup."""
+
+    disc_number: int
+    disc_total: int
+    track_number: int
+    track_total: int
+    title: str
+    artist: str | None = None
+    length_ms: int | None = None
+
+
+class MusicBrainzReleaseDetail(MusicBrainzReleaseCandidate):
+    """Full MusicBrainz release metadata including genre and tracklist."""
+
+    genre: str | None = None
+    compilation: bool = False
+    tracks: list[MusicBrainzTrackInfo] = Field(default_factory=list)
+
+
+class MusicBrainzApplyRequest(BaseModel):
+    """Apply a chosen MusicBrainz release's metadata and/or Cover Art Archive image to target tracks."""
+
+    mbid: str
+    paths: list[str] = Field(..., min_length=1)
+    apply_metadata: bool = True
+    apply_artwork: bool = True
+    apply_track_titles: bool = False
+    trigger_navidrome_scan: bool = True
+
+
+class MusicBrainzApplyResponse(BulkUpdateResponse):
+    """Outcome of applying a MusicBrainz release match."""
+
+    artwork_applied: bool = False
+    artwork_note: str | None = None
+

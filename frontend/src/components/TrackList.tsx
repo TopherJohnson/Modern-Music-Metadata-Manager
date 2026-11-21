@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Disc3,
   FolderOpen,
+  Globe,
   Images,
   Layers,
   Music,
@@ -23,6 +24,7 @@ interface TrackListProps {
   onBackToAll: () => void;
   onSelectTrack: (track: TrackMetadata) => void;
   onStartBulkEdit: (album: AlbumGroup) => void;
+  onIdentifyAlbum: (album: AlbumGroup) => void;
   onRescan: () => void;
 }
 
@@ -68,6 +70,7 @@ export function TrackList({
   onBackToAll,
   onSelectTrack,
   onStartBulkEdit,
+  onIdentifyAlbum,
   onRescan,
 }: TrackListProps) {
   if (loading) {
@@ -254,7 +257,17 @@ export function TrackList({
             </p>
           </div>
 
-          <div className="shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              id="header-identify-album-btn"
+              type="button"
+              onClick={() => onIdentifyAlbum(selectedAlbum)}
+              className="m4-btn-secondary"
+              title="Identify album and cover art via MusicBrainz"
+            >
+              <Globe className="h-3.5 w-3.5 text-accent" />
+              Identify
+            </button>
             <button
               id="bulk-edit-album-btn"
               type="button"

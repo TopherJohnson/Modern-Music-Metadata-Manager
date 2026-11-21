@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.config import Settings, load_settings
 from app.database import Database
-from app.routers import health, library, tracks
+from app.routers import health, library, musicbrainz, tracks
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -65,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(library.router)
     app.include_router(tracks.router)
+    app.include_router(musicbrainz.router)
 
     static_dir = active_settings.static_dir
     if static_dir and static_dir.is_dir():

@@ -6,7 +6,7 @@ import {
   Code2,
   Disc3,
   FileAudio,
-  ImagePlus,
+  Globe,
   Images,
   Layers,
   RotateCcw,
@@ -15,6 +15,7 @@ import {
   Upload,
 } from "lucide-react";
 import { formatFileSize, getArtworkUrl, getRawTags } from "../api/client";
+import type { MusicBrainzModalMode } from "./MusicBrainzModal";
 import type {
   AlbumGroup,
   ArtworkVariant,
@@ -36,6 +37,7 @@ interface MetadataEditorProps {
   onUploadArtwork: (paths: string[], file: File) => Promise<void>;
   onCopyArtwork: (sourcePath: string, targetPaths: string[]) => Promise<void>;
   onDeleteArtwork: (path: string) => Promise<void>;
+  onOpenMusicBrainz: (mode: MusicBrainzModalMode, targetPaths: string[]) => void;
 }
 
 interface FieldSpec {
@@ -157,6 +159,7 @@ export function MetadataEditor({
   onUploadArtwork,
   onCopyArtwork,
   onDeleteArtwork,
+  onOpenMusicBrainz,
 }: MetadataEditorProps) {
   const isBulk = bulkAlbum !== null;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -493,9 +496,40 @@ export function MetadataEditor({
         className="flex flex-1 flex-col overflow-hidden"
       >
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {/* Jellyfin-style Identify Album via MusicBrainz (Bulk Mode) */}
+          {isBulk && bulkAlbum && (
+            <button
+              id="identify-album-musicbrainz-btn"
+              type="button"
+              disabled={saving || uploadingArtwork}
+              onClick={() =>
+                onOpenMusicBrainz(
+                  "identify",
+                  bulkAlbum.tracks.map((t) => t.path)
+                )
+              }
+              className="flex w-full items-center justify-between gap-3 rounded-xl border border-border-strong bg-surface-elevated px-3.5 py-2.5 text-left transition-colors hover:border-accent/60 hover:bg-surface-hover cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Globe className="h-4 w-4 shrink-0 text-accent" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-ink-primary">
+                    Identify Album via MusicBrainz
+                  </p>
+                  <p className="truncate text-[11px] text-ink-muted">
+                    Match release metadata, MBIDs &amp; cover art
+                  </p>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-md bg-accent-soft px-2 py-0.5 text-[11px] font-medium text-accent">
+                Search
+              </span>
+            </button>
+          )}
+
           {/* Embedded Cover Art Section */}
           <div className="rounded-xl border border-border-subtle bg-canvas/70 p-3 space-y-3">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3.5">
               <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg border border-border-subtle bg-surface-elevated">
                 {coverPath ? (
                   <img
@@ -511,9 +545,24 @@ export function MetadataEditor({
               </div>
 
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-ink-primary">
-                  Embedded Cover Art
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-ink-primary">
+                    Embedded Cover Art
+                  </p>
+                  {!isBulk && selectedTrack?.has_artwork && (
+                    <button
+                      id="remove-artwork-btn"
+                      type="button"
+                      disabled={uploadingArtwork}
+                      onClick={() => onDeleteArtwork(selectedTrack.path)}
+                      className="inline-flex h-6 items-center justify-center rounded-md border border-border-subtle px-1.5 text-ink-muted hover:border-danger/60 hover:text-danger transition-colors cursor-pointer"
+                      title="Remove embedded artwork"
+                      aria-label="Remove embedded artwork"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
                 <p className="mt-0.5 text-[11px] text-ink-muted">
                   {isBulk
                     ? artworkVariants.length > 1
@@ -528,82 +577,83 @@ export function MetadataEditor({
                       : "No embedded image"}
                 </p>
 
-                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    onChange={handleFileSelected}
-                    className="hidden"
-                  />
-                  {artworkVariants.length > 0 ? (
-                    <button
-                      id="replace-artwork-btn"
-                      type="button"
-                      disabled={uploadingArtwork}
-                      onClick={() => setShowCoverPicker((open) => !open)}
-                      className="m4-btn-secondary h-7 px-2.5 text-[11px]"
-                    >
-                      <Images className="h-3 w-3" />
-                      {uploadingArtwork
-                        ? "Applying..."
-                        : showCoverPicker
-                          ? "Hide Covers"
-                          : "Replace"}
-                    </button>
-                  ) : (
-                    <button
-                      id="upload-artwork-btn"
-                      type="button"
-                      disabled={uploadingArtwork}
-                      onClick={() => fileInputRef.current?.click()}
-                      className="m4-btn-secondary h-7 px-2.5 text-[11px]"
-                    >
-                      <ImagePlus className="h-3 w-3" />
-                      {uploadingArtwork ? "Embedding..." : "Embed Art"}
-                    </button>
-                  )}
-
-                  {!isBulk && selectedTrack?.has_artwork && (
-                    <button
-                      id="remove-artwork-btn"
-                      type="button"
-                      disabled={uploadingArtwork}
-                      onClick={() => onDeleteArtwork(selectedTrack.path)}
-                      className="inline-flex h-7 items-center justify-center rounded-lg border border-border-subtle px-2 text-ink-muted hover:border-danger/60 hover:text-danger transition-colors cursor-pointer"
-                      title="Remove embedded artwork"
-                      aria-label="Remove embedded artwork"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={handleFileSelected}
+                  className="hidden"
+                />
               </div>
             </div>
 
-            {/* Existing Album Cover Picker + Upload New */}
-            {showCoverPicker && (
+            {/* 3 Clear Artwork Replacement Actions: Pick Existing, Search MusicBrainz, Upload Image */}
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                id="pick-existing-artwork-btn"
+                type="button"
+                disabled={uploadingArtwork || artworkVariants.length === 0}
+                onClick={() => setShowCoverPicker((open) => !open)}
+                title={
+                  artworkVariants.length === 0
+                    ? "No embedded images exist on this album yet"
+                    : "Choose from images already embedded on this album"
+                }
+                className={`inline-flex h-8 items-center justify-center gap-1 rounded-lg border px-2 text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                  showCoverPicker
+                    ? "border-accent bg-accent-soft text-accent"
+                    : "border-border-subtle bg-surface-elevated text-ink-primary hover:bg-surface-hover hover:border-border-strong"
+                }`}
+              >
+                <Images className="h-3 w-3 shrink-0" />
+                <span className="truncate">Pick Existing</span>
+              </button>
+
+              <button
+                id="search-musicbrainz-artwork-btn"
+                type="button"
+                disabled={uploadingArtwork}
+                onClick={() => {
+                  const targets = bulkAlbum
+                    ? bulkAlbum.tracks.map((t) => t.path)
+                    : selectedTrack
+                      ? [selectedTrack.path]
+                      : [];
+                  if (targets.length > 0) {
+                    onOpenMusicBrainz("artwork", targets);
+                  }
+                }}
+                className="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface-elevated px-2 text-[11px] font-medium text-ink-primary transition-colors hover:bg-surface-hover hover:border-border-strong cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Search MusicBrainz / Cover Art Archive for album artwork"
+              >
+                <Globe className="h-3 w-3 shrink-0 text-accent" />
+                <span className="truncate">MusicBrainz</span>
+              </button>
+
+              <button
+                id="upload-artwork-btn"
+                type="button"
+                disabled={uploadingArtwork}
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex h-8 items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface-elevated px-2 text-[11px] font-medium text-ink-primary transition-colors hover:bg-surface-hover hover:border-border-strong cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Upload a JPEG, PNG, or WebP cover image from your computer"
+              >
+                <Upload className="h-3 w-3 shrink-0" />
+                <span className="truncate">Upload</span>
+              </button>
+            </div>
+
+            {/* Existing Album Cover Picker */}
+            {showCoverPicker && artworkVariants.length > 0 && (
               <div
                 id="existing-artwork-picker"
-                className="border-t border-border-subtle pt-3 space-y-2.5"
+                className="border-t border-border-subtle pt-3 space-y-2"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[11px] font-medium text-ink-secondary">
-                    {isBulk
-                      ? "Choose an existing album cover for all tracks:"
-                      : "Choose an existing cover from this album:"}
-                  </p>
-                  <button
-                    id="upload-new-artwork-btn"
-                    type="button"
-                    disabled={uploadingArtwork}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent-hover cursor-pointer"
-                  >
-                    <Upload className="h-3 w-3" />
-                    Upload file
-                  </button>
-                </div>
+                <p className="text-[11px] font-medium text-ink-secondary">
+                  {isBulk
+                    ? "Click an existing album image to apply it to all tracks:"
+                    : "Click an existing album image to apply it to this track:"}
+                </p>
 
                 <div className="grid grid-cols-3 gap-2">
                   {artworkVariants.map((variant, index) => {

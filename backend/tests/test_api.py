@@ -316,3 +316,105 @@ def test_navidrome_split_diagnostics_and_raw_tags(client: TestClient) -> None:
     ]
     assert split_warnings == []
 
+
+def test_musicbrainz_search_and_apply(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models import (
+        MusicBrainzReleaseCandidate,
+        MusicBrainzReleaseDetail,
+        MusicBrainzTrackInfo,
+    )
+    from app.routers import musicbrainz as mb_router
+
+    mbid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    artist_mbid = "11111111-1111-1111-1111-111111111111"
+
+    async def fake_search(album: str, artist: str | None = None, limit: int = 10):
+        return [
+            MusicBrainzReleaseCandidate(
+                mbid=mbid,
+                title="Geogaddi",
+                artist="Boards of Canada",
+                artist_mbid=artist_mbid,
+                date="2002-02-18",
+                year="2002",
+                country="GB",
+                track_count=2,
+                score=100,
+                cover_art_url=f"/api/musicbrainz/cover/{mbid}?size=500",
+            )
+        ]
+
+    async def fake_detail(release_id: str):
+        return MusicBrainzReleaseDetail(
+            mbid=release_id,
+            title="Geogaddi",
+            artist="Boards of Canada",
+            artist_mbid=artist_mbid,
+            date="2002-02-18",
+            year="2002",
+            country="GB",
+            track_count=2,
+            genre="Idm",
+            compilation=False,
+            cover_art_url=f"/api/musicbrainz/cover/{release_id}?size=500",
+            tracks=[
+                MusicBrainzTrackInfo(
+                    disc_number=1,
+                    disc_total=1,
+                    track_number=1,
+                    track_total=2,
+                    title="Ready Lets Go",
+                    artist="Boards of Canada",
+                ),
+                MusicBrainzTrackInfo(
+                    disc_number=1,
+                    disc_total=1,
+                    track_number=2,
+                    track_total=2,
+                    title="Music Is Math",
+                    artist="Boards of Canada",
+                ),
+            ],
+        )
+
+    async def fake_cover(release_id: str, size: int | None = 1200):
+        return TINY_PNG, "image/png"
+
+    monkeypatch.setattr(mb_router, "search_releases", fake_search)
+    monkeypatch.setattr(mb_router, "get_release_detail", fake_detail)
+    monkeypatch.setattr(mb_router, "fetch_cover_art", fake_cover)
+
+    search_res = client.get(
+        "/api/musicbrainz/search",
+        params={"album": "Geogaddi", "artist": "Boards of Canada"},
+    )
+    assert search_res.status_code == 200
+    assert search_res.json()[0]["mbid"] == mbid
+
+    paths = [
+        "Boards of Canada/Geogaddi/01 - Intro.mp3",
+        "Boards of Canada/Geogaddi/02 - Music Is Math.flac",
+    ]
+    apply_res = client.post(
+        "/api/musicbrainz/apply",
+        json={
+            "mbid": mbid,
+            "paths": paths,
+            "apply_metadata": True,
+            "apply_artwork": True,
+            "apply_track_titles": True,
+        },
+    )
+    assert apply_res.status_code == 200
+    body = apply_res.json()
+    assert body["errors"] == []
+    assert body["artwork_applied"] is True
+    assert len(body["updated"]) == 2
+    assert {t["musicbrainz_album_id"] for t in body["updated"]} == {mbid}
+    assert {t["release_date"] for t in body["updated"]} == {"2002-02-18"}
+    assert [t["title"] for t in body["updated"]] == ["Ready Lets Go", "Music Is Math"]
+    assert all(t["has_artwork"] for t in body["updated"])
+
+

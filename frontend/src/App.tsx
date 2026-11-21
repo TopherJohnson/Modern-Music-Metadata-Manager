@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  applyMusicBrainzRelease,
   copyArtwork,
   deleteArtwork,
   getHealth,
@@ -13,6 +14,10 @@ import {
 } from "./api/client";
 import { Header } from "./components/Header";
 import { MetadataEditor } from "./components/MetadataEditor";
+import {
+  MusicBrainzModal,
+  type MusicBrainzModalMode,
+} from "./components/MusicBrainzModal";
 import { Sidebar } from "./components/Sidebar";
 import { Toast, type ToastMessage } from "./components/Toast";
 import { TrackList } from "./components/TrackList";
@@ -21,6 +26,7 @@ import type {
   ArtistGroup,
   HealthResponse,
   LibraryResponse,
+  MusicBrainzApplyPayload,
   NavidromeSyncResult,
   TrackMetadata,
   TrackTags,
@@ -66,6 +72,22 @@ export function App() {
   const [syncingNavidrome, setSyncingNavidrome] = useState(false);
   const [artworkRevision, setArtworkRevision] = useState(1);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [applyingMb, setApplyingMb] = useState(false);
+  const [mbModal, setMbModal] = useState<{
+    open: boolean;
+    mode: MusicBrainzModalMode;
+    album: string;
+    artist: string;
+    targetPaths: string[];
+    localTrackCount: number;
+  }>({
+    open: false,
+    mode: "identify",
+    album: "",
+    artist: "",
+    targetPaths: [],
+    localTrackCount: 0,
+  });
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -367,6 +389,91 @@ export function App() {
     }
   };
 
+  const handleOpenMusicBrainz = (
+    mode: MusicBrainzModalMode,
+    targetPaths: string[]
+  ) => {
+    const albumTitle =
+      selectedAlbum?.title || activeTrack?.album || "";
+    const artistName =
+      selectedAlbum?.artist ||
+      activeTrack?.album_artist ||
+      activeTrack?.artist ||
+      "";
+    setMbModal({
+      open: true,
+      mode,
+      album: albumTitle === "Unknown Album" ? "" : albumTitle,
+      artist: artistName === "Unknown Artist" ? "" : artistName,
+      targetPaths,
+      localTrackCount: selectedAlbum?.track_count ?? targetPaths.length,
+    });
+  };
+
+  const handleIdentifyAlbum = (album: AlbumGroup) => {
+    setSelectedAlbumId(album.id);
+    setMbModal({
+      open: true,
+      mode: "identify",
+      album: album.title === "Unknown Album" ? "" : album.title,
+      artist: album.artist === "Unknown Artist" ? "" : album.artist,
+      targetPaths: album.tracks.map((t) => t.path),
+      localTrackCount: album.track_count,
+    });
+  };
+
+  const handleApplyMusicBrainz = async (payload: MusicBrainzApplyPayload) => {
+    setApplyingMb(true);
+    try {
+      const response = await applyMusicBrainzRelease(payload);
+      if (liveTrack) {
+        const refreshed = response.updated.find((t) => t.path === liveTrack.path);
+        if (refreshed) setLiveTrack(refreshed);
+      }
+      setArtworkRevision((r) => r + 1);
+      const updatedLib = await fetchLibrary(debouncedQuery, { silent: true });
+      if (updatedLib && response.updated.length > 0) {
+        const relocated = findAlbumAndTrackByPath(
+          updatedLib.artists,
+          response.updated[0].path
+        );
+        if (relocated) {
+          setSelectedAlbumId(relocated.album.id);
+        }
+      }
+      setMbModal((prev) => ({ ...prev, open: false }));
+
+      const details = [
+        response.artwork_note,
+        formatNavidromeNote(response.navidrome_sync),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (response.errors.length > 0) {
+        showToast(
+          "error",
+          `Updated ${response.updated.length} tracks (${response.errors.length} failed)`,
+          response.errors[0].error
+        );
+      } else {
+        showToast(
+          "success",
+          `Applied MusicBrainz match to ${response.updated.length} ${
+            response.updated.length === 1 ? "track" : "tracks"
+          }`,
+          details || undefined
+        );
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not apply MusicBrainz release";
+      showToast("error", "MusicBrainz apply failed", msg);
+    } finally {
+      setApplyingMb(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col bg-canvas text-ink-primary">
       <Header
@@ -401,6 +508,7 @@ export function App() {
           onBackToAll={handleSelectAll}
           onSelectTrack={handleSelectTrack}
           onStartBulkEdit={handleStartBulkEdit}
+          onIdentifyAlbum={handleIdentifyAlbum}
           onRescan={handleRescan}
         />
 
@@ -416,8 +524,21 @@ export function App() {
           onUploadArtwork={handleUploadArtwork}
           onCopyArtwork={handleCopyArtwork}
           onDeleteArtwork={handleDeleteArtwork}
+          onOpenMusicBrainz={handleOpenMusicBrainz}
         />
       </div>
+
+      <MusicBrainzModal
+        open={mbModal.open}
+        mode={mbModal.mode}
+        initialAlbum={mbModal.album}
+        initialArtist={mbModal.artist}
+        targetPaths={mbModal.targetPaths}
+        localTrackCount={mbModal.localTrackCount}
+        applying={applyingMb}
+        onClose={() => setMbModal((prev) => ({ ...prev, open: false }))}
+        onApply={handleApplyMusicBrainz}
+      />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
