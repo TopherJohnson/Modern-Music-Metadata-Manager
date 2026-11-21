@@ -1,0 +1,31 @@
+.git
+.gitignore
+.github
+README.md
+docker-compose.yml
+config/
+music/
+*.db
+.env
+.env.*
+
+# Python caches & virtualenvs
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.venv
+venv
+backend/.venv
+backend/tests
+.pytest_cache
+
+# Node / Frontend artifacts
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# OS & Editors
+.DS_Store
+.vscode
+.idea
