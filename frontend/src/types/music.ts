@@ -7,7 +7,12 @@ export type EditableTagField =
   | "track_number"
   | "disc_number"
   | "genre"
-  | "composer";
+  | "composer"
+  | "release_date"
+  | "album_version"
+  | "compilation"
+  | "musicbrainz_album_id"
+  | "musicbrainz_album_artist_id";
 
 export interface TrackTags {
   title: string | null;
@@ -19,6 +24,11 @@ export interface TrackTags {
   disc_number: string | null;
   genre: string | null;
   composer: string | null;
+  release_date: string | null;
+  album_version: string | null;
+  compilation: string | null;
+  musicbrainz_album_id: string | null;
+  musicbrainz_album_artist_id: string | null;
 }
 
 export interface TrackMetadata extends TrackTags {
@@ -32,6 +42,31 @@ export interface TrackMetadata extends TrackTags {
   mtime: number;
   has_artwork: boolean;
   artwork_mime: string | null;
+  artwork_hash: string | null;
+  artwork_size: number | null;
+}
+
+export interface RawTagsResponse {
+  path: string;
+  format: string;
+  tags: Record<string, string[]>;
+}
+
+export interface ArtworkVariant {
+  hash: string;
+  sample_track_path: string;
+  mime: string | null;
+  size: number;
+  track_count: number;
+  track_paths: string[];
+}
+
+export interface NavidromeSplitWarning {
+  field: string;
+  label: string;
+  severity: "split" | "artwork" | string;
+  message: string;
+  values: string[];
 }
 
 export interface AlbumGroup {
@@ -44,6 +79,8 @@ export interface AlbumGroup {
   track_count: number;
   total_duration: number;
   formats: string[];
+  artwork_variants: ArtworkVariant[];
+  navidrome_warnings: NavidromeSplitWarning[];
   tracks: TrackMetadata[];
 }
 

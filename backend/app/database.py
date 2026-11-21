@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS track_cache (
     sample_rate INTEGER,
     has_artwork INTEGER NOT NULL DEFAULT 0,
     artwork_mime TEXT,
+    artwork_hash TEXT,
+    artwork_size INTEGER,
     title TEXT,
     artist TEXT,
     album_artist TEXT,
@@ -32,7 +34,12 @@ CREATE TABLE IF NOT EXISTS track_cache (
     track_number TEXT,
     disc_number TEXT,
     genre TEXT,
-    composer TEXT
+    composer TEXT,
+    release_date TEXT,
+    album_version TEXT,
+    compilation TEXT,
+    musicbrainz_album_id TEXT,
+    musicbrainz_album_artist_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_history (
@@ -53,6 +60,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 """
 
+# Columns added after v0.1.0 initial schema; auto-migrated on startup.
+_TRACK_CACHE_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("artwork_hash", "TEXT"),
+    ("artwork_size", "INTEGER"),
+    ("release_date", "TEXT"),
+    ("album_version", "TEXT"),
+    ("compilation", "TEXT"),
+    ("musicbrainz_album_id", "TEXT"),
+    ("musicbrainz_album_artist_id", "TEXT"),
+)
+
 
 class Database:
     """Thin SQLite wrapper used for caching scanned track metadata and recording edits."""
@@ -62,10 +80,24 @@ class Database:
         self._initialized = False
 
     def init(self) -> None:
-        """Create the config directory and initialize tables if needed."""
+        """Create the config directory, initialize tables, and migrate schema if needed."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            existing_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(track_cache)").fetchall()
+            }
+            migrated = False
+            for col_name, col_type in _TRACK_CACHE_MIGRATIONS:
+                if col_name not in existing_cols:
+                    conn.execute(
+                        f"ALTER TABLE track_cache ADD COLUMN {col_name} {col_type}"
+                    )
+                    migrated = True
+            if migrated:
+                # Clear stale cache rows once so the next scan populates the new metadata fields.
+                conn.execute("DELETE FROM track_cache")
         self._initialized = True
 
     @contextmanager
@@ -111,6 +143,8 @@ class Database:
                 t.sample_rate,
                 1 if t.has_artwork else 0,
                 t.artwork_mime,
+                t.artwork_hash,
+                t.artwork_size,
                 t.title,
                 t.artist,
                 t.album_artist,
@@ -120,6 +154,11 @@ class Database:
                 t.disc_number,
                 t.genre,
                 t.composer,
+                t.release_date,
+                t.album_version,
+                t.compilation,
+                t.musicbrainz_album_id,
+                t.musicbrainz_album_artist_id,
             )
             for t in tracks
         ]
@@ -129,9 +168,12 @@ class Database:
                 INSERT INTO track_cache (
                     path, filename, format, mtime, file_size, duration,
                     bitrate, sample_rate, has_artwork, artwork_mime,
+                    artwork_hash, artwork_size,
                     title, artist, album_artist, album, year,
-                    track_number, disc_number, genre, composer
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    track_number, disc_number, genre, composer,
+                    release_date, album_version, compilation,
+                    musicbrainz_album_id, musicbrainz_album_artist_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     filename=excluded.filename,
                     format=excluded.format,
@@ -142,6 +184,8 @@ class Database:
                     sample_rate=excluded.sample_rate,
                     has_artwork=excluded.has_artwork,
                     artwork_mime=excluded.artwork_mime,
+                    artwork_hash=excluded.artwork_hash,
+                    artwork_size=excluded.artwork_size,
                     title=excluded.title,
                     artist=excluded.artist,
                     album_artist=excluded.album_artist,
@@ -150,7 +194,12 @@ class Database:
                     track_number=excluded.track_number,
                     disc_number=excluded.disc_number,
                     genre=excluded.genre,
-                    composer=excluded.composer
+                    composer=excluded.composer,
+                    release_date=excluded.release_date,
+                    album_version=excluded.album_version,
+                    compilation=excluded.compilation,
+                    musicbrainz_album_id=excluded.musicbrainz_album_id,
+                    musicbrainz_album_artist_id=excluded.musicbrainz_album_artist_id
                 """,
                 params,
             )
@@ -222,6 +271,8 @@ class Database:
             sample_rate=row["sample_rate"],
             has_artwork=bool(row["has_artwork"]),
             artwork_mime=row["artwork_mime"],
+            artwork_hash=row["artwork_hash"],
+            artwork_size=row["artwork_size"],
             title=row["title"],
             artist=row["artist"],
             album_artist=row["album_artist"],
@@ -231,4 +282,9 @@ class Database:
             disc_number=row["disc_number"],
             genre=row["genre"],
             composer=row["composer"],
+            release_date=row["release_date"],
+            album_version=row["album_version"],
+            compilation=row["compilation"],
+            musicbrainz_album_id=row["musicbrainz_album_id"],
+            musicbrainz_album_artist_id=row["musicbrainz_album_artist_id"],
         )

@@ -91,10 +91,12 @@ Modern-Music-Metadata-Manager/
 | `GET` | `/api/library?q=&rescan=` | Library tree grouped by `Artist -> Album -> Track` with optional search |
 | `POST` | `/api/library/scan` | Force a full rescan of `/music` and refresh cache |
 | `GET` | `/api/track?path=` | Read live metadata for a single track directly from disk |
+| `GET` | `/api/track/raw?path=` | Inspect all raw audio tag frames/atoms on a file |
 | `PUT` | `/api/track` | Write updated tags to a single track (and optionally trigger Navidrome scan) |
 | `PUT` | `/api/tracks/bulk` | Batch-update shared tags across multiple tracks (album-level edit) |
 | `GET` | `/api/track/artwork?path=` | Serve embedded front cover art for a track |
 | `PUT` | `/api/track/artwork` | Embed or replace cover art on one or more tracks |
+| `POST` | `/api/track/artwork/copy` | Copy an existing album track's embedded cover art onto target tracks |
 | `DELETE` | `/api/track/artwork?path=` | Remove embedded cover art from a track |
 | `GET` | `/api/history` | Inspect recent metadata edit audit history stored in `/config/m4.db` |
 | `POST` | `/api/navidrome/scan` | Manually trigger a Navidrome Subsonic `startScan` |

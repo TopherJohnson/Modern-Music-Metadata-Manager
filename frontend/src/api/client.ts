@@ -4,6 +4,7 @@ import type {
   HealthResponse,
   LibraryResponse,
   NavidromeSyncResult,
+  RawTagsResponse,
   TrackMetadata,
   TrackUpdatePayload,
   TrackUpdateResponse,
@@ -61,6 +62,11 @@ export function getTrack(path: string): Promise<TrackMetadata> {
   return requestJson<TrackMetadata>(`/api/track?${params.toString()}`);
 }
 
+export function getRawTags(path: string): Promise<RawTagsResponse> {
+  const params = new URLSearchParams({ path });
+  return requestJson<RawTagsResponse>(`/api/track/raw?${params.toString()}`);
+}
+
 export function updateTrack(payload: TrackUpdatePayload): Promise<TrackUpdateResponse> {
   return requestJson<TrackUpdateResponse>("/api/track", {
     method: "PUT",
@@ -89,6 +95,20 @@ export function uploadArtwork(
   return requestJson<BulkUpdateResponse>("/api/track/artwork", {
     method: "PUT",
     body: formData,
+  });
+}
+
+export function copyArtwork(
+  sourcePath: string,
+  targetPaths: string[]
+): Promise<BulkUpdateResponse> {
+  return requestJson<BulkUpdateResponse>("/api/track/artwork/copy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source_path: sourcePath,
+      target_paths: targetPaths,
+    }),
   });
 }
 

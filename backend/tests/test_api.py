@@ -224,3 +224,95 @@ def test_artwork_upload_read_and_delete(client: TestClient) -> None:
 def test_path_traversal_rejected(client: TestClient) -> None:
     res = client.get("/api/track", params={"path": "../../etc/passwd"})
     assert res.status_code == 400
+
+
+def test_existing_album_artwork_variants_and_copy(client: TestClient) -> None:
+    mp3_path = "Boards of Canada/Geogaddi/01 - Intro.mp3"
+    flac_path = "Boards of Canada/Geogaddi/02 - Music Is Math.flac"
+
+    # Embed two different images on the two tracks of the same album
+    alt_png = TINY_PNG + b"\x00"
+    assert (
+        client.put(
+            "/api/track/artwork",
+            data={"path": mp3_path},
+            files={"file": ("cover1.png", TINY_PNG, "image/png")},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            "/api/track/artwork",
+            data={"path": flac_path},
+            files={"file": ("cover2.png", alt_png, "image/png")},
+        ).status_code
+        == 200
+    )
+
+    album = client.get("/api/library").json()["artists"][0]["albums"][0]
+    assert len(album["artwork_variants"]) == 2
+    assert any(w["field"] == "artwork" for w in album["navidrome_warnings"])
+
+    # Copy the MP3's existing cover onto both tracks in the album
+    copy_res = client.post(
+        "/api/track/artwork/copy",
+        json={
+            "source_path": mp3_path,
+            "target_paths": [mp3_path, flac_path],
+        },
+    )
+    assert copy_res.status_code == 200
+    assert copy_res.json()["errors"] == []
+
+    # Now both tracks share 1 identical cover hash
+    album_after = client.get("/api/library").json()["artists"][0]["albums"][0]
+    assert len(album_after["artwork_variants"]) == 1
+    assert album_after["artwork_variants"][0]["track_count"] == 2
+    assert not any(w["field"] == "artwork" for w in album_after["navidrome_warnings"])
+
+
+def test_navidrome_split_diagnostics_and_raw_tags(client: TestClient) -> None:
+    mp3_path = "Boards of Canada/Geogaddi/01 - Intro.mp3"
+    flac_path = "Boards of Canada/Geogaddi/02 - Music Is Math.flac"
+
+    # Set a MusicBrainz Album ID and Release Date on only one track
+    res = client.put(
+        "/api/track",
+        json={
+            "path": mp3_path,
+            "year": "2002",
+            "musicbrainz_album_id": "11111111-2222-3333-4444-555555555555",
+            "release_date": "2002-02-18",
+        },
+    )
+    assert res.status_code == 200
+
+    album = client.get("/api/library").json()["artists"][0]["albums"][0]
+    warning_fields = {w["field"] for w in album["navidrome_warnings"]}
+    assert "musicbrainz_album_id" in warning_fields
+    assert "release_date" in warning_fields
+
+    # Inspect raw tags endpoint
+    raw_res = client.get("/api/track/raw", params={"path": mp3_path})
+    assert raw_res.status_code == 200
+    raw_tags = raw_res.json()["tags"]
+    assert any("MusicBrainz Album Id" in k for k in raw_tags.keys())
+
+    # Clear mismatched Navidrome tags across the album in bulk
+    bulk_res = client.put(
+        "/api/tracks/bulk",
+        json={
+            "paths": [mp3_path, flac_path],
+            "musicbrainz_album_id": None,
+            "release_date": None,
+            "year": "2002",
+        },
+    )
+    assert bulk_res.status_code == 200
+
+    album_fixed = client.get("/api/library").json()["artists"][0]["albums"][0]
+    split_warnings = [
+        w for w in album_fixed["navidrome_warnings"] if w["severity"] == "split"
+    ]
+    assert split_warnings == []
+

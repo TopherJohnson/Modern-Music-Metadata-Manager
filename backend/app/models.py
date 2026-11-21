@@ -30,7 +30,10 @@ class HealthResponse(BaseModel):
 
 
 class TrackTags(BaseModel):
-    """Editable standard metadata tags shared across ID3v2, Vorbis, and MP4."""
+    """Editable metadata tags shared across ID3v2, Vorbis, and MP4.
+
+    Includes standard display tags plus Navidrome album-grouping (PID) tags.
+    """
 
     title: str | None = None
     artist: str | None = None
@@ -41,6 +44,12 @@ class TrackTags(BaseModel):
     disc_number: str | None = None
     genre: str | None = None
     composer: str | None = None
+    # Navidrome album-grouping / release disambiguation tags
+    release_date: str | None = None
+    album_version: str | None = None
+    compilation: str | None = None
+    musicbrainz_album_id: str | None = None
+    musicbrainz_album_artist_id: str | None = None
 
 
 class TrackMetadata(TrackTags):
@@ -56,6 +65,16 @@ class TrackMetadata(TrackTags):
     mtime: float = 0.0
     has_artwork: bool = False
     artwork_mime: str | None = None
+    artwork_hash: str | None = None
+    artwork_size: int | None = None
+
+
+class RawTagsResponse(BaseModel):
+    """All raw metadata frames/atoms read directly from an audio file."""
+
+    path: str
+    format: str
+    tags: dict[str, list[str]]
 
 
 class TrackUpdateRequest(BaseModel):
@@ -75,6 +94,11 @@ class TrackUpdateRequest(BaseModel):
     disc_number: str | None = None
     genre: str | None = None
     composer: str | None = None
+    release_date: str | None = None
+    album_version: str | None = None
+    compilation: str | None = None
+    musicbrainz_album_id: str | None = None
+    musicbrainz_album_artist_id: str | None = None
     trigger_navidrome_scan: bool = True
 
 
@@ -98,6 +122,19 @@ class BulkUpdateRequest(BaseModel):
     disc_number: str | None = None
     genre: str | None = None
     composer: str | None = None
+    release_date: str | None = None
+    album_version: str | None = None
+    compilation: str | None = None
+    musicbrainz_album_id: str | None = None
+    musicbrainz_album_artist_id: str | None = None
+    trigger_navidrome_scan: bool = True
+
+
+class CopyArtworkRequest(BaseModel):
+    """Payload for POST /api/track/artwork/copy to copy an existing track's artwork onto target tracks."""
+
+    source_path: str
+    target_paths: list[str] = Field(..., min_length=1)
     trigger_navidrome_scan: bool = True
 
 
@@ -109,15 +146,36 @@ class BulkUpdateError(BaseModel):
 
 
 class BulkUpdateResponse(BaseModel):
-    """Response returned after a bulk metadata update."""
+    """Response returned after a bulk metadata or artwork update."""
 
     updated: list[TrackMetadata]
     errors: list[BulkUpdateError] = Field(default_factory=list)
     navidrome_sync: NavidromeSyncResult
 
 
+class ArtworkVariant(BaseModel):
+    """Distinct embedded cover image found across one or more tracks in an album."""
+
+    hash: str
+    sample_track_path: str
+    mime: str | None = None
+    size: int = 0
+    track_count: int
+    track_paths: list[str] = Field(default_factory=list)
+
+
+class NavidromeSplitWarning(BaseModel):
+    """Diagnostic warning for tag inconsistencies that can split albums or cover art in Navidrome."""
+
+    field: str
+    label: str
+    severity: str = "split"  # "split" (breaks PID.Album) or "artwork" (inconsistent covers)
+    message: str
+    values: list[str] = Field(default_factory=list)
+
+
 class AlbumGroup(BaseModel):
-    """Album entry containing its sorted tracks."""
+    """Album entry containing its sorted tracks, distinct artwork variants, and Navidrome diagnostics."""
 
     id: str
     title: str
@@ -128,6 +186,8 @@ class AlbumGroup(BaseModel):
     track_count: int
     total_duration: float
     formats: list[str] = Field(default_factory=list)
+    artwork_variants: list[ArtworkVariant] = Field(default_factory=list)
+    navidrome_warnings: list[NavidromeSplitWarning] = Field(default_factory=list)
     tracks: list[TrackMetadata] = Field(default_factory=list)
 
 

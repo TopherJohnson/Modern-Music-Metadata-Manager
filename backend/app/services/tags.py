@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -13,22 +14,25 @@ from mutagen.id3 import (
     ID3,
     ID3NoHeaderError,
     TALB,
+    TCMP,
     TCOM,
     TCON,
     TDRC,
+    TDRL,
     TIT2,
     TPE1,
     TPE2,
     TPOS,
     TRCK,
+    TXXX,
 )
 from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4, MP4Cover
+from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 
 from app.config import SUPPORTED_EXTENSIONS
-from app.models import TrackMetadata
+from app.models import RawTagsResponse, TrackMetadata
 
 EDITABLE_FIELDS: tuple[str, ...] = (
     "title",
@@ -40,6 +44,11 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "disc_number",
     "genre",
     "composer",
+    "release_date",
+    "album_version",
+    "compilation",
+    "musicbrainz_album_id",
+    "musicbrainz_album_artist_id",
 )
 
 _ID3_TEXT_FRAMES: dict[str, tuple[str, type]] = {
@@ -52,6 +61,23 @@ _ID3_TEXT_FRAMES: dict[str, tuple[str, type]] = {
     "disc_number": ("TPOS", TPOS),
     "genre": ("TCON", TCON),
     "composer": ("TCOM", TCOM),
+    "release_date": ("TDRL", TDRL),
+    "compilation": ("TCMP", TCMP),
+}
+
+_ID3_TXXX_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
+    "musicbrainz_album_id": (
+        "MusicBrainz Album Id",
+        ("musicbrainz album id", "musicbrainz_albumid"),
+    ),
+    "musicbrainz_album_artist_id": (
+        "MusicBrainz Album Artist Id",
+        ("musicbrainz album artist id", "musicbrainz_albumartistid"),
+    ),
+    "album_version": (
+        "ALBUMVERSION",
+        ("albumversion", "musicbrainz album comment", "version"),
+    ),
 }
 
 _VORBIS_KEYS: dict[str, str] = {
@@ -64,6 +90,11 @@ _VORBIS_KEYS: dict[str, str] = {
     "disc_number": "DISCNUMBER",
     "genre": "GENRE",
     "composer": "COMPOSER",
+    "release_date": "RELEASEDATE",
+    "album_version": "ALBUMVERSION",
+    "compilation": "COMPILATION",
+    "musicbrainz_album_id": "MUSICBRAINZ_ALBUMID",
+    "musicbrainz_album_artist_id": "MUSICBRAINZ_ALBUMARTISTID",
 }
 
 _MP4_TEXT_ATOMS: dict[str, str] = {
@@ -74,6 +105,35 @@ _MP4_TEXT_ATOMS: dict[str, str] = {
     "year": "\xa9day",
     "genre": "\xa9gen",
     "composer": "\xa9wrt",
+}
+
+_MP4_FREEFORM_ATOMS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "release_date": (
+        "----:com.apple.iTunes:RELEASEDATE",
+        ("----:com.apple.iTunes:RELEASEDATE", "----:com.apple.iTunes:releasedate"),
+    ),
+    "album_version": (
+        "----:com.apple.iTunes:ALBUMVERSION",
+        (
+            "----:com.apple.iTunes:ALBUMVERSION",
+            "----:com.apple.iTunes:MusicBrainz Album Comment",
+            "----:com.apple.iTunes:VERSION",
+        ),
+    ),
+    "musicbrainz_album_id": (
+        "----:com.apple.iTunes:MusicBrainz Album Id",
+        (
+            "----:com.apple.iTunes:MusicBrainz Album Id",
+            "----:com.apple.iTunes:MUSICBRAINZ_ALBUMID",
+        ),
+    ),
+    "musicbrainz_album_artist_id": (
+        "----:com.apple.iTunes:MusicBrainz Album Artist Id",
+        (
+            "----:com.apple.iTunes:MusicBrainz Album Artist Id",
+            "----:com.apple.iTunes:MUSICBRAINZ_ALBUMARTISTID",
+        ),
+    ),
 }
 
 
@@ -121,8 +181,23 @@ def resolve_track_path(music_dir: Path, rel_path: str) -> tuple[Path, str]:
 def _clean_text(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace").strip()
+    else:
+        text = str(value).strip()
     return text if text else None
+
+
+def _normalize_compilation(value: Any) -> str | None:
+    cleaned = _clean_text(value)
+    if cleaned is None:
+        return None
+    low = cleaned.lower()
+    if low in {"1", "true", "yes"}:
+        return "1"
+    if low in {"0", "false", "no"}:
+        return "0"
+    return cleaned
 
 
 def _parse_int_pair(raw: str | None) -> tuple[int, int] | None:
@@ -172,6 +247,29 @@ def _open_audio(file_path: Path):
     raise InvalidTrackPathError(f"Unsupported extension: {ext}")
 
 
+def _find_txxx(tags: ID3, aliases: tuple[str, ...]) -> str | None:
+    alias_set = {a.lower() for a in aliases}
+    for frame in tags.getall("TXXX"):
+        desc = (getattr(frame, "desc", "") or "").strip().lower()
+        if desc in alias_set and getattr(frame, "text", None):
+            val = _clean_text(frame.text[0])
+            if val is not None:
+                return val
+    return None
+
+
+def _delete_txxx(tags: ID3, aliases: tuple[str, ...]) -> None:
+    alias_set = {a.lower() for a in aliases}
+    to_remove = [
+        key
+        for key, frame in list(tags.items())
+        if key.startswith("TXXX:")
+        and (getattr(frame, "desc", "") or "").strip().lower() in alias_set
+    ]
+    for key in to_remove:
+        del tags[key]
+
+
 def _extract_id3_tags(audio: MP3) -> dict[str, str | None]:
     tags: ID3 | None = audio.tags
     result: dict[str, str | None] = {field: None for field in EDITABLE_FIELDS}
@@ -188,6 +286,15 @@ def _extract_id3_tags(audio: MP3) -> dict[str, str | None]:
         tyer = tags.get("TYER")
         if tyer is not None and getattr(tyer, "text", None):
             result["year"] = _clean_text(tyer.text[0])
+
+    if not result["release_date"]:
+        result["release_date"] = _find_txxx(tags, ("releasedate", "release date"))
+
+    for field, (_, aliases) in _ID3_TXXX_MAP.items():
+        result[field] = _find_txxx(tags, aliases)
+
+    if result["compilation"] is not None:
+        result["compilation"] = _normalize_compilation(result["compilation"])
 
     return result
 
@@ -214,6 +321,11 @@ def _extract_vorbis_tags(audio: FLAC | OggVorbis | OggOpus) -> dict[str, str | N
     result["year"] = first("DATE", "YEAR")
     result["genre"] = first("GENRE")
     result["composer"] = first("COMPOSER")
+    result["release_date"] = first("RELEASEDATE", "ORIGINALDATE")
+    result["album_version"] = first("ALBUMVERSION", "VERSION", "MUSICBRAINZ_ALBUMCOMMENT")
+    result["compilation"] = _normalize_compilation(first("COMPILATION"))
+    result["musicbrainz_album_id"] = first("MUSICBRAINZ_ALBUMID")
+    result["musicbrainz_album_artist_id"] = first("MUSICBRAINZ_ALBUMARTISTID")
 
     track_num = first("TRACKNUMBER")
     track_total = first("TRACKTOTAL", "TOTALTRACKS")
@@ -250,6 +362,21 @@ def _extract_mp4_tags(audio: MP4) -> dict[str, str | None]:
     disk = tags.get("disk")
     if disk:
         result["disc_number"] = _format_int_pair(disk[0])
+
+    cpil = tags.get("cpil")
+    if cpil is not None:
+        result["compilation"] = "1" if bool(cpil) else "0"
+
+    # Case-insensitive lookup for iTunes freeform atoms
+    lower_map = {k.lower(): k for k in tags.keys()}
+    for field, (_, aliases) in _MP4_FREEFORM_ATOMS.items():
+        for alias in aliases:
+            actual_key = lower_map.get(alias.lower())
+            if actual_key and tags.get(actual_key):
+                val = _clean_text(tags[actual_key][0])
+                if val is not None:
+                    result[field] = val
+                    break
 
     return result
 
@@ -313,7 +440,7 @@ def _read_artwork_from_audio(audio: Any) -> tuple[bytes, str] | None:
 
 
 def read_track_metadata(music_dir: Path, rel_path: str) -> TrackMetadata:
-    """Read technical info and standard metadata tags from an audio file on disk."""
+    """Read technical info and standard + Navidrome metadata tags from an audio file on disk."""
     file_path, normalized_rel = resolve_track_path(music_dir, rel_path)
     stat = file_path.stat()
     audio = _open_audio(file_path)
@@ -328,6 +455,15 @@ def read_track_metadata(music_dir: Path, rel_path: str) -> TrackMetadata:
         tags = {field: None for field in EDITABLE_FIELDS}
 
     artwork = _read_artwork_from_audio(audio)
+    artwork_hash: str | None = None
+    artwork_size: int | None = None
+    if artwork is not None:
+        artwork_bytes, artwork_mime = artwork
+        artwork_hash = hashlib.sha256(artwork_bytes).hexdigest()[:16]
+        artwork_size = len(artwork_bytes)
+    else:
+        artwork_mime = None
+
     info = getattr(audio, "info", None)
     duration = float(getattr(info, "length", 0.0) or 0.0)
     bitrate_raw = getattr(info, "bitrate", None)
@@ -345,8 +481,62 @@ def read_track_metadata(music_dir: Path, rel_path: str) -> TrackMetadata:
         file_size=stat.st_size,
         mtime=stat.st_mtime,
         has_artwork=artwork is not None,
-        artwork_mime=artwork[1] if artwork else None,
+        artwork_mime=artwork_mime,
+        artwork_hash=artwork_hash,
+        artwork_size=artwork_size,
         **tags,
+    )
+
+
+def read_raw_tags(music_dir: Path, rel_path: str) -> RawTagsResponse:
+    """Return every raw metadata frame/key stored inside an audio file for debugging Navidrome splits."""
+    file_path, normalized_rel = resolve_track_path(music_dir, rel_path)
+    audio = _open_audio(file_path)
+    raw: dict[str, list[str]] = {}
+
+    if isinstance(audio, MP3) and audio.tags:
+        for key in sorted(audio.tags.keys()):
+            frame = audio.tags[key]
+            if key.startswith("APIC"):
+                raw[key] = [
+                    f"<embedded image: {getattr(frame, 'mime', 'image/*')}, {len(getattr(frame, 'data', b''))} bytes>"
+                ]
+            elif hasattr(frame, "text"):
+                raw[key] = [str(v) for v in frame.text]
+            else:
+                raw[key] = [str(frame)]
+    elif isinstance(audio, (FLAC, OggVorbis, OggOpus)):
+        if audio.tags:
+            for key in sorted(audio.tags.keys()):
+                if key.upper() == "METADATA_BLOCK_PICTURE":
+                    raw[key] = [f"<embedded picture block ({len(audio.tags[key])} item(s))>"]
+                else:
+                    raw[key] = [str(v) for v in audio.tags[key]]
+        if isinstance(audio, FLAC) and audio.pictures:
+            raw["FLAC_PICTURES"] = [
+                f"<picture type={p.type} mime={p.mime} bytes={len(p.data)}>"
+                for p in audio.pictures
+            ]
+    elif isinstance(audio, MP4) and audio.tags:
+        for key in sorted(audio.tags.keys()):
+            vals = audio.tags[key]
+            if key == "covr":
+                raw[key] = [f"<embedded cover ({len(vals)} item(s), {len(bytes(vals[0]))} bytes)>"]
+            elif isinstance(vals, list):
+                rendered = []
+                for v in vals:
+                    if isinstance(v, bytes):
+                        rendered.append(v.decode("utf-8", errors="replace"))
+                    else:
+                        rendered.append(str(v))
+                raw[key] = rendered
+            else:
+                raw[key] = [str(vals)]
+
+    return RawTagsResponse(
+        path=normalized_rel,
+        format=file_path.suffix.lstrip(".").upper(),
+        tags=raw,
     )
 
 
@@ -387,15 +577,26 @@ def _apply_id3_updates(audio: MP3, updates: dict[str, str | None]) -> None:
 
     tags: ID3 = audio.tags
     for field, raw_val in updates.items():
-        if field not in _ID3_TEXT_FRAMES:
-            continue
-        frame_id, frame_cls = _ID3_TEXT_FRAMES[field]
-        cleaned = _clean_text(raw_val)
-        tags.delall(frame_id)
-        if field == "year":
-            tags.delall("TYER")
-        if cleaned is not None:
-            tags.add(frame_cls(encoding=3, text=[cleaned]))
+        if field in _ID3_TEXT_FRAMES:
+            frame_id, frame_cls = _ID3_TEXT_FRAMES[field]
+            cleaned = (
+                _normalize_compilation(raw_val)
+                if field == "compilation"
+                else _clean_text(raw_val)
+            )
+            tags.delall(frame_id)
+            if field == "year":
+                tags.delall("TYER")
+            elif field == "release_date":
+                _delete_txxx(tags, ("releasedate", "release date"))
+            if cleaned is not None:
+                tags.add(frame_cls(encoding=3, text=[cleaned]))
+        elif field in _ID3_TXXX_MAP:
+            canonical_desc, aliases = _ID3_TXXX_MAP[field]
+            cleaned = _clean_text(raw_val)
+            _delete_txxx(tags, aliases)
+            if cleaned is not None:
+                tags.add(TXXX(encoding=3, desc=canonical_desc, text=[cleaned]))
 
 
 def _del_vorbis_keys(tags: Any, *keys: str) -> None:
@@ -416,12 +617,26 @@ def _apply_vorbis_updates(
         if field not in _VORBIS_KEYS:
             continue
         key = _VORBIS_KEYS[field]
-        cleaned = _clean_text(raw_val)
+        cleaned = (
+            _normalize_compilation(raw_val)
+            if field == "compilation"
+            else _clean_text(raw_val)
+        )
 
         if field == "album_artist":
             _del_vorbis_keys(tags, "ALBUM ARTIST", "album artist")
         elif field == "year":
             _del_vorbis_keys(tags, "YEAR", "year")
+        elif field == "release_date":
+            _del_vorbis_keys(tags, "ORIGINALDATE", "originaldate")
+        elif field == "album_version":
+            _del_vorbis_keys(
+                tags,
+                "VERSION",
+                "version",
+                "MUSICBRAINZ_ALBUMCOMMENT",
+                "musicbrainz_albumcomment",
+            )
         elif field == "track_number":
             _del_vorbis_keys(tags, "TRACKTOTAL", "TOTALTRACKS")
             if cleaned and "/" in cleaned:
@@ -464,6 +679,20 @@ def _apply_mp4_updates(audio: MP4, updates: dict[str, str | None]) -> None:
                 tags.pop(atom, None)
             else:
                 tags[atom] = [cleaned]
+        elif field in _MP4_FREEFORM_ATOMS:
+            canonical_atom, aliases = _MP4_FREEFORM_ATOMS[field]
+            alias_lowers = {a.lower() for a in aliases}
+            for existing_key in list(tags.keys()):
+                if existing_key.lower() in alias_lowers:
+                    tags.pop(existing_key, None)
+            if cleaned is not None:
+                tags[canonical_atom] = [MP4FreeForm(cleaned.encode("utf-8"))]
+        elif field == "compilation":
+            norm = _normalize_compilation(raw_val)
+            if norm is None:
+                tags.pop("cpil", None)
+            else:
+                tags["cpil"] = norm == "1"
         elif field == "track_number":
             if cleaned is None:
                 tags.pop("trkn", None)

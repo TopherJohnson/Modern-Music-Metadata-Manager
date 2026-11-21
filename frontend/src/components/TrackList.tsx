@@ -1,4 +1,13 @@
-import { ArrowLeft, Disc3, FolderOpen, Layers, Music, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Disc3,
+  FolderOpen,
+  Images,
+  Layers,
+  Music,
+  RefreshCw,
+} from "lucide-react";
 import { formatDuration, getArtworkUrl } from "../api/client";
 import type { AlbumGroup, ArtistGroup, TrackMetadata } from "../types/music";
 
@@ -122,43 +131,73 @@ export function TrackList({
         </div>
 
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          {allAlbums.map(({ artist, album }) => (
-            <button
-              key={album.id}
-              type="button"
-              onClick={() => onSelectAlbum(artist, album)}
-              className="group flex flex-col rounded-xl border border-border-subtle bg-surface p-3 text-left transition-colors hover:border-border-strong hover:bg-surface-elevated cursor-pointer"
-            >
-              <div className="aspect-square w-full overflow-hidden rounded-lg">
-                <AlbumCover
-                  coverPath={album.cover_track_path}
-                  alt={`${album.title} cover`}
-                  revision={artworkRevision}
-                  sizeClass="h-full w-full transition-transform duration-200 group-hover:scale-[1.02]"
-                />
-              </div>
-              <div className="mt-3 min-w-0">
-                <p className="truncate text-xs font-semibold text-ink-primary group-hover:text-accent transition-colors">
-                  {album.title}
-                </p>
-                <p className="mt-0.5 truncate text-xs text-ink-secondary">
-                  {album.artist}
-                </p>
-                <div className="mt-2 flex items-center justify-between gap-1 text-[10px] font-mono text-ink-muted">
-                  <span>
-                    {album.year ? album.year.slice(0, 4) : "—"} · {album.track_count}t
-                  </span>
-                  <span className="rounded border border-border-subtle bg-canvas px-1.5 py-0.5 text-[10px] uppercase text-ink-secondary">
-                    {album.formats.join("/")}
-                  </span>
+          {allAlbums.map(({ artist, album }) => {
+            const splitCount = album.navidrome_warnings.filter(
+              (w) => w.severity === "split"
+            ).length;
+            const multiCovers = album.artwork_variants.length > 1;
+            return (
+              <button
+                key={album.id}
+                type="button"
+                onClick={() => onSelectAlbum(artist, album)}
+                className="group relative flex flex-col rounded-xl border border-border-subtle bg-surface p-3 text-left transition-colors hover:border-border-strong hover:bg-surface-elevated cursor-pointer"
+              >
+                <div className="relative aspect-square w-full overflow-hidden rounded-lg">
+                  <AlbumCover
+                    coverPath={album.cover_track_path}
+                    alt={`${album.title} cover`}
+                    revision={artworkRevision}
+                    sizeClass="h-full w-full transition-transform duration-200 group-hover:scale-[1.02]"
+                  />
+                  {(splitCount > 0 || multiCovers) && (
+                    <div
+                      className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-border-strong bg-canvas/90 px-1.5 py-0.5 text-[10px] font-medium text-warn backdrop-blur-xs"
+                      title={
+                        splitCount > 0
+                          ? `${splitCount} Navidrome split-album tag mismatch(es)`
+                          : `${album.artwork_variants.length} distinct cover images`
+                      }
+                    >
+                      {splitCount > 0 ? (
+                        <AlertTriangle className="h-3 w-3" />
+                      ) : (
+                        <Images className="h-3 w-3" />
+                      )}
+                      {splitCount > 0 ? splitCount : album.artwork_variants.length}
+                    </div>
+                  )}
                 </div>
-              </div>
-            </button>
-          ))}
+                <div className="mt-3 min-w-0">
+                  <p className="truncate text-xs font-semibold text-ink-primary group-hover:text-accent transition-colors">
+                    {album.title}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-ink-secondary">
+                    {album.artist}
+                  </p>
+                  <div className="mt-2 flex items-center justify-between gap-1 text-[10px] font-mono text-ink-muted">
+                    <span>
+                      {album.year ? album.year.slice(0, 4) : "—"} · {album.track_count}t
+                    </span>
+                    <span className="rounded border border-border-subtle bg-canvas px-1.5 py-0.5 text-[10px] uppercase text-ink-secondary">
+                      {album.formats.join("/")}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </main>
     );
   }
+
+  const splitWarnings = selectedAlbum.navidrome_warnings.filter(
+    (w) => w.severity === "split"
+  );
+  const artworkWarnings = selectedAlbum.navidrome_warnings.filter(
+    (w) => w.severity === "artwork"
+  );
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden bg-canvas">
@@ -227,6 +266,65 @@ export function TrackList({
             </button>
           </div>
         </div>
+
+        {/* Navidrome Grouping & Artwork Diagnostics */}
+        {selectedAlbum.navidrome_warnings.length > 0 && (
+          <div
+            id="navidrome-diagnostics-banner"
+            className="mt-4 rounded-xl border border-border-strong bg-canvas/80 px-4 py-3"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                {splitWarnings.length > 0 ? (
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+                ) : (
+                  <Images className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                )}
+                <div className="min-w-0 space-y-1.5">
+                  <p className="text-xs font-semibold text-ink-primary">
+                    {splitWarnings.length > 0
+                      ? `Navidrome Split-Album Risk (${splitWarnings.length} tag ${
+                          splitWarnings.length === 1 ? "mismatch" : "mismatches"
+                        })`
+                      : "Inconsistent Album Artwork"}
+                  </p>
+                  <ul className="space-y-1 text-[11px] text-ink-secondary">
+                    {[...splitWarnings, ...artworkWarnings].map((warning, idx) => (
+                      <li key={`${warning.field}-${idx}`} className="leading-snug">
+                        <span className="font-medium text-ink-primary">
+                          {warning.label}:
+                        </span>{" "}
+                        {warning.message}
+                        {warning.values.length > 0 && (
+                          <span className="ml-1.5 inline-flex flex-wrap gap-1 align-middle">
+                            {warning.values.map((val) => (
+                              <code
+                                key={val}
+                                className="rounded bg-surface-elevated px-1.5 py-0.5 font-mono text-[10px] text-ink-primary"
+                              >
+                                {val}
+                              </code>
+                            ))}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {!isBulkEditingAlbum && (
+                <button
+                  type="button"
+                  onClick={() => onStartBulkEdit(selectedAlbum)}
+                  className="m4-btn-secondary shrink-0 h-7 px-2.5 text-[11px]"
+                >
+                  Fix in Bulk Edit
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Track Table */}

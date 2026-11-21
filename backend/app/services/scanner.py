@@ -1,4 +1,4 @@
-"""Library scanner with mtime/size SQLite caching and Artist -> Album -> Track grouping."""
+"""Library scanner with mtime/size SQLite caching, artwork deduplication, and Navidrome split diagnostics."""
 
 from __future__ import annotations
 
@@ -12,7 +12,15 @@ from pathlib import Path
 
 from app.config import SUPPORTED_EXTENSIONS
 from app.database import Database
-from app.models import AlbumGroup, ArtistGroup, LibraryResponse, LibraryStats, TrackMetadata
+from app.models import (
+    AlbumGroup,
+    ArtistGroup,
+    ArtworkVariant,
+    LibraryResponse,
+    LibraryStats,
+    NavidromeSplitWarning,
+    TrackMetadata,
+)
 from app.services.tags import read_track_metadata
 
 logger = logging.getLogger(__name__)
@@ -28,6 +36,140 @@ def _parse_sort_number(value: str | None) -> int:
 def _stable_id(*parts: str) -> str:
     digest = hashlib.sha1("::".join(parts).encode("utf-8")).hexdigest()
     return digest[:12]
+
+
+def _display_value(value: str | None) -> str:
+    return value if value else "(empty)"
+
+
+def _collect_artwork_variants(tracks: list[TrackMetadata]) -> list[ArtworkVariant]:
+    """Deduplicate embedded cover images across an album's tracks using `artwork_hash`."""
+    buckets: dict[str, list[TrackMetadata]] = defaultdict(list)
+    for track in tracks:
+        if track.has_artwork:
+            key = track.artwork_hash or f"path:{track.path}"
+            buckets[key].append(track)
+
+    variants: list[ArtworkVariant] = []
+    for art_hash, matching_tracks in buckets.items():
+        sample = matching_tracks[0]
+        variants.append(
+            ArtworkVariant(
+                hash=art_hash,
+                sample_track_path=sample.path,
+                mime=sample.artwork_mime,
+                size=sample.artwork_size or 0,
+                track_count=len(matching_tracks),
+                track_paths=[t.path for t in matching_tracks],
+            )
+        )
+
+    variants.sort(key=lambda v: (-v.track_count, -v.size, v.sample_track_path))
+    return variants
+
+
+def _detect_navidrome_warnings(
+    tracks: list[TrackMetadata],
+    artwork_variants: list[ArtworkVariant],
+) -> list[NavidromeSplitWarning]:
+    """Detect tag discrepancies that cause Navidrome's default PID.Album rule to split an album."""
+    if len(tracks) <= 1:
+        return []
+
+    warnings: list[NavidromeSplitWarning] = []
+
+    def check_field(field: str, label: str, reason: str) -> None:
+        raw_vals = [(getattr(t, field) or "").strip() for t in tracks]
+        distinct = sorted(set(raw_vals))
+        if len(distinct) > 1:
+            warnings.append(
+                NavidromeSplitWarning(
+                    field=field,
+                    label=label,
+                    severity="split",
+                    message=reason,
+                    values=[_display_value(v) for v in distinct[:6]],
+                )
+            )
+
+    check_field(
+        "musicbrainz_album_id",
+        "MusicBrainz Album ID",
+        "Navidrome groups by MusicBrainz Album ID first. Mixed or missing IDs across tracks split the album.",
+    )
+    check_field(
+        "musicbrainz_album_artist_id",
+        "MusicBrainz Album Artist ID",
+        "Different MusicBrainz Album Artist IDs produce different albumartistid PIDs in Navidrome.",
+    )
+    check_field(
+        "album_artist",
+        "Album Artist",
+        "Inconsistent Album Artist tags across tracks cause Navidrome to split the album.",
+    )
+
+    # Also detect missing album_artist combined with differing per-track artist (e.g. "feat." guests)
+    if all(not (t.album_artist or "").strip() for t in tracks):
+        distinct_artists = sorted({(t.artist or "").strip() for t in tracks})
+        if len(distinct_artists) > 1:
+            warnings.append(
+                NavidromeSplitWarning(
+                    field="album_artist",
+                    label="Missing Album Artist",
+                    severity="split",
+                    message="Tracks have different Artist values and no Album Artist set; Navidrome splits these unless Album Artist is unified (or Compilation=1).",
+                    values=[_display_value(v) for v in distinct_artists[:6]],
+                )
+            )
+
+    check_field(
+        "year",
+        "Year / Date",
+        "Navidrome includes release date in its default Album PID; mismatched years/dates split the album.",
+    )
+    check_field(
+        "release_date",
+        "Release Date (TDRL / RELEASEDATE)",
+        "Navidrome uses RELEASEDATE/TDRL to disambiguate reissues; mismatched values split the album.",
+    )
+    check_field(
+        "album_version",
+        "Album Version",
+        "Different album version / comment tags split an album into separate editions in Navidrome.",
+    )
+    check_field(
+        "compilation",
+        "Compilation Flag",
+        "Some tracks are marked as part of a compilation while others are not.",
+    )
+
+    # Embedded artwork consistency (multiple distinct images or missing artwork on some tracks)
+    tracks_without_art = sum(1 for t in tracks if not t.has_artwork)
+    if len(artwork_variants) > 1:
+        warnings.append(
+            NavidromeSplitWarning(
+                field="artwork",
+                label="Multiple Embedded Covers",
+                severity="artwork",
+                message=f"{len(artwork_variants)} distinct embedded cover images found across tracks. Use Bulk Edit to apply one cover to the whole album.",
+                values=[
+                    f"{v.track_count} track{'s' if v.track_count != 1 else ''} ({v.mime or 'image'})"
+                    for v in artwork_variants[:5]
+                ],
+            )
+        )
+    elif len(artwork_variants) == 1 and tracks_without_art > 0:
+        warnings.append(
+            NavidromeSplitWarning(
+                field="artwork",
+                label="Partial Cover Art",
+                severity="artwork",
+                message=f"{tracks_without_art} of {len(tracks)} tracks are missing embedded cover art.",
+                values=[],
+            )
+        )
+
+    return warnings
 
 
 def scan_library(
@@ -110,6 +252,9 @@ def _matches_query(track: TrackMetadata, tokens: list[str]) -> bool:
             track.genre,
             track.composer,
             track.year,
+            track.release_date,
+            track.album_version,
+            track.musicbrainz_album_id,
             track.format,
             track.path,
         )
@@ -161,7 +306,13 @@ def build_library_response(
             years = sorted({t.year for t in sorted_tracks if t.year})
             genres = sorted({t.genre for t in sorted_tracks if t.genre})
             formats = sorted({t.format for t in sorted_tracks if t.format})
-            cover_track = next((t.path for t in sorted_tracks if t.has_artwork), None)
+            artwork_variants = _collect_artwork_variants(sorted_tracks)
+            cover_track = (
+                artwork_variants[0].sample_track_path if artwork_variants else None
+            )
+            navidrome_warnings = _detect_navidrome_warnings(
+                sorted_tracks, artwork_variants
+            )
             album_duration = round(sum(t.duration for t in sorted_tracks), 2)
 
             album_groups.append(
@@ -175,6 +326,8 @@ def build_library_response(
                     track_count=len(sorted_tracks),
                     total_duration=album_duration,
                     formats=formats,
+                    artwork_variants=artwork_variants,
+                    navidrome_warnings=navidrome_warnings,
                     tracks=sorted_tracks,
                 )
             )

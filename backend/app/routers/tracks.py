@@ -1,4 +1,4 @@
-"""Track inspection, single/bulk tag editing, and embedded cover art endpoints."""
+"""Track inspection, single/bulk tag editing, raw tag viewer, and embedded cover art endpoints."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from app.models import (
     BulkUpdateError,
     BulkUpdateRequest,
     BulkUpdateResponse,
+    CopyArtworkRequest,
+    RawTagsResponse,
     TrackMetadata,
     TrackUpdateRequest,
     TrackUpdateResponse,
@@ -21,6 +23,7 @@ from app.services.tags import (
     TagServiceError,
     TrackNotFoundError,
     delete_track_artwork,
+    read_raw_tags,
     read_track_artwork,
     read_track_metadata,
     write_track_artwork,
@@ -66,6 +69,19 @@ async def get_track(
         _raise_http_for_tag_error(exc)
     db.upsert_tracks([track])
     return track
+
+
+@router.get("/track/raw", response_model=RawTagsResponse)
+async def get_track_raw_tags(
+    request: Request,
+    path: str = Query(..., description="Relative POSIX path of the track inside /music"),
+) -> RawTagsResponse:
+    """Return all raw tag frames/keys directly from disk for inspecting hidden Navidrome grouping tags."""
+    settings = request.app.state.settings
+    try:
+        return read_raw_tags(settings.music_dir, path)
+    except Exception as exc:
+        _raise_http_for_tag_error(exc)
 
 
 @router.put("/track", response_model=TrackUpdateResponse)
@@ -176,6 +192,66 @@ async def get_track_artwork(
     )
 
 
+@router.post("/track/artwork/copy", response_model=BulkUpdateResponse)
+async def copy_track_artwork(
+    request: Request,
+    payload: CopyArtworkRequest,
+) -> BulkUpdateResponse:
+    """Copy an existing track's embedded cover artwork onto one or more target tracks."""
+    settings = request.app.state.settings
+    db = request.app.state.db
+
+    try:
+        artwork = read_track_artwork(settings.music_dir, payload.source_path)
+    except Exception as exc:
+        _raise_http_for_tag_error(exc)
+
+    if artwork is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Source track has no embedded cover artwork to copy.",
+        )
+
+    image_bytes, mime_type = artwork
+    target_paths = list(dict.fromkeys(payload.target_paths))
+
+    updated: list[TrackMetadata] = []
+    errors: list[BulkUpdateError] = []
+
+    for rel_path in target_paths:
+        try:
+            after = write_track_artwork(
+                settings.music_dir,
+                rel_path,
+                image_bytes,
+                mime_type=mime_type,
+            )
+            db.record_audit(
+                path=after.path,
+                action="copy_artwork",
+                before_tags={},
+                after_tags={
+                    "source_path": payload.source_path,
+                    "artwork_hash": after.artwork_hash,
+                },
+            )
+            updated.append(after)
+        except Exception as exc:
+            errors.append(BulkUpdateError(path=rel_path, error=str(exc)))
+
+    if updated:
+        db.upsert_tracks(updated)
+
+    navidrome_sync = await trigger_navidrome_scan(
+        settings, requested=payload.trigger_navidrome_scan and bool(updated)
+    )
+    return BulkUpdateResponse(
+        updated=updated,
+        errors=errors,
+        navidrome_sync=navidrome_sync,
+    )
+
+
 @router.put("/track/artwork", response_model=BulkUpdateResponse)
 async def put_track_artwork(
     request: Request,
@@ -200,7 +276,6 @@ async def put_track_artwork(
     if path:
         target_paths.append(path)
 
-    # Deduplicate preserving order
     target_paths = list(dict.fromkeys(target_paths))
     if not target_paths:
         raise HTTPException(status_code=400, detail="At least one track path must be provided.")
@@ -233,7 +308,10 @@ async def put_track_artwork(
                 path=after.path,
                 action="update_artwork",
                 before_tags={},
-                after_tags={"artwork_mime": after.artwork_mime},
+                after_tags={
+                    "artwork_mime": after.artwork_mime,
+                    "artwork_hash": after.artwork_hash,
+                },
             )
             updated.append(after)
         except Exception as exc:

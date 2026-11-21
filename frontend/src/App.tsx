@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  copyArtwork,
   deleteArtwork,
   getHealth,
   getLibrary,
@@ -308,6 +309,44 @@ export function App() {
     }
   };
 
+  const handleCopyArtwork = async (sourcePath: string, targetPaths: string[]) => {
+    setUploadingArtwork(true);
+    try {
+      const response = await copyArtwork(sourcePath, targetPaths);
+      if (
+        response.updated.length === 1 &&
+        liveTrack?.path === response.updated[0].path
+      ) {
+        setLiveTrack(response.updated[0]);
+      } else if (liveTrack) {
+        const refreshed = response.updated.find((t) => t.path === liveTrack.path);
+        if (refreshed) setLiveTrack(refreshed);
+      }
+      setArtworkRevision((r) => r + 1);
+      await fetchLibrary(debouncedQuery, { silent: true });
+      if (response.errors.length > 0) {
+        showToast(
+          "error",
+          `Applied cover to ${response.updated.length} file(s), ${response.errors.length} failed`,
+          response.errors[0].error
+        );
+      } else {
+        showToast(
+          "success",
+          `Applied cover art to ${response.updated.length} ${
+            response.updated.length === 1 ? "track" : "tracks"
+          }`,
+          formatNavidromeNote(response.navidrome_sync)
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not copy artwork";
+      showToast("error", "Artwork update failed", msg);
+    } finally {
+      setUploadingArtwork(false);
+    }
+  };
+
   const handleDeleteArtwork = async (path: string) => {
     setUploadingArtwork(true);
     try {
@@ -367,6 +406,7 @@ export function App() {
 
         <MetadataEditor
           selectedTrack={activeTrack}
+          activeAlbum={selectedAlbum}
           bulkAlbum={isBulkMode ? selectedAlbum : null}
           artworkRevision={artworkRevision}
           saving={saving}
@@ -374,6 +414,7 @@ export function App() {
           onSaveTrack={handleSaveTrack}
           onSaveBulk={handleSaveBulk}
           onUploadArtwork={handleUploadArtwork}
+          onCopyArtwork={handleCopyArtwork}
           onDeleteArtwork={handleDeleteArtwork}
         />
       </div>
