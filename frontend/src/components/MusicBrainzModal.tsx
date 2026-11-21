@@ -251,12 +251,21 @@ export function MusicBrainzModal({
               <p className="text-xs">Searching MusicBrainz &amp; Cover Art Archive...</p>
             </div>
           ) : error ? (
-            <div className="flex items-start gap-2.5 rounded-xl border border-danger/40 bg-danger/10 p-4 text-xs text-ink-primary">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
-              <div>
-                <p className="font-semibold">MusicBrainz search failed</p>
-                <p className="mt-0.5 text-ink-secondary">{error}</p>
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-danger/40 bg-danger/10 p-4 text-xs text-ink-primary">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+                <div>
+                  <p className="font-semibold">MusicBrainz search failed</p>
+                  <p className="mt-0.5 text-ink-secondary">{error}</p>
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={() => void runSearch(albumQuery, artistQuery)}
+                className="m4-btn-secondary shrink-0 h-7 px-2.5 text-[11px]"
+              >
+                Retry
+              </button>
             </div>
           ) : results.length === 0 ? (
             <div className="py-14 text-center text-xs text-ink-muted">

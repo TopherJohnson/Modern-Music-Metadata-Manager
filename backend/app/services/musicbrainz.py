@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import time
 from typing import Any
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 MUSICBRAINZ_BASE = "https://musicbrainz.org/ws/2"
 COVERART_BASE = "https://coverartarchive.org"
 USER_AGENT = (
-    f"M4-Music-Metadata-Manager/{__version__} "
+    f"ModernMusicMetadataManager/{__version__} "
     "( https://github.com/TopherJohnson/Modern-Music-Metadata-Manager )"
 )
 
@@ -26,9 +27,14 @@ _MBID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
-# Polite 1 request/second rate limiter for MusicBrainz API guidelines
+# Polite 1 request/second serializer + short TTL response cache
 _mb_lock = asyncio.Lock()
 _mb_last_call: float = 0.0
+_CACHE_TTL_SECONDS = 900.0  # 15 minutes
+_mb_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 4
 
 
 class MusicBrainzError(Exception):
@@ -114,33 +120,96 @@ def _parse_release_summary(item: dict[str, Any]) -> MusicBrainzReleaseCandidate:
     )
 
 
+def _extract_mb_error_detail(resp: httpx.Response) -> str:
+    try:
+        body = resp.json()
+        if isinstance(body, dict) and isinstance(body.get("error"), str):
+            return body["error"].strip()
+    except Exception:
+        pass
+    if resp.status_code == 503:
+        return "MusicBrainz is temporarily busy or rate-limiting requests (HTTP 503). Please retry in a few seconds."
+    return f"MusicBrainz returned HTTP {resp.status_code}."
+
+
 async def _mb_get_json(path: str, params: dict[str, Any]) -> dict[str, Any]:
     global _mb_last_call
-    async with _mb_lock:
-        elapsed = time.monotonic() - _mb_last_call
-        if elapsed < 1.05:
-            await asyncio.sleep(1.05 - elapsed)
-        _mb_last_call = time.monotonic()
 
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Accept": "application/json",
-        }
-        try:
-            async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-                resp = await client.get(
-                    f"{MUSICBRAINZ_BASE}{path}",
-                    params={**params, "fmt": "json"},
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                return resp.json()
-        except httpx.HTTPStatusError as exc:
-            raise MusicBrainzError(
-                f"MusicBrainz returned HTTP {exc.response.status_code}."
-            ) from exc
-        except Exception as exc:
-            raise MusicBrainzError(f"MusicBrainz request failed: {exc}") from exc
+    cache_key = f"{path}?{'&'.join(f'{k}={v}' for k, v in sorted(params.items()))}"
+    cached = _mb_cache.get(cache_key)
+    if cached and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
+        return cached[1]
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+    }
+
+    last_error: str = "MusicBrainz request failed."
+
+    async with _mb_lock:
+        # Re-check cache after acquiring lock in case an identical request just finished
+        cached = _mb_cache.get(cache_key)
+        if cached and (time.monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
+            return cached[1]
+
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                elapsed = time.monotonic() - _mb_last_call
+                if elapsed < 1.15:
+                    await asyncio.sleep(1.15 - elapsed)
+
+                try:
+                    resp = await client.get(
+                        f"{MUSICBRAINZ_BASE}{path}",
+                        params={**params, "fmt": "json"},
+                        headers=headers,
+                    )
+                except httpx.HTTPError as exc:
+                    _mb_last_call = time.monotonic()
+                    last_error = f"MusicBrainz network error: {exc}"
+                    if attempt < _MAX_ATTEMPTS:
+                        backoff = (1.5 * attempt) + random.uniform(0.1, 0.5)
+                        logger.warning(
+                            "MusicBrainz request error on attempt %d/%d (%s); retrying in %.1fs",
+                            attempt,
+                            _MAX_ATTEMPTS,
+                            exc,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    raise MusicBrainzError(last_error) from exc
+
+                _mb_last_call = time.monotonic()
+
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    _mb_cache[cache_key] = (time.monotonic(), payload)
+                    return payload
+
+                last_error = _extract_mb_error_detail(resp)
+                if resp.status_code in _RETRYABLE_STATUSES and attempt < _MAX_ATTEMPTS:
+                    retry_after_raw = resp.headers.get("Retry-After")
+                    try:
+                        retry_after = float(retry_after_raw) if retry_after_raw else 0.0
+                    except ValueError:
+                        retry_after = 0.0
+                    backoff = max(retry_after, (1.4 * attempt) + random.uniform(0.2, 0.6))
+                    logger.warning(
+                        "MusicBrainz HTTP %d on attempt %d/%d (%s); retrying in %.1fs",
+                        resp.status_code,
+                        attempt,
+                        _MAX_ATTEMPTS,
+                        last_error,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+
+                raise MusicBrainzError(last_error)
+
+    raise MusicBrainzError(last_error)
 
 
 async def search_releases(
@@ -253,18 +322,27 @@ async def fetch_cover_art(mbid: str, *, size: int | None = 1200) -> tuple[bytes,
 
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
         for url in urls:
-            try:
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 404:
-                    continue
-                resp.raise_for_status()
-                content_type = (resp.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
-                if not content_type.startswith("image/"):
-                    content_type = "image/jpeg"
-                if resp.content:
-                    return resp.content, content_type
-            except httpx.HTTPError as exc:
-                logger.debug("Cover Art Archive fetch failed for %s: %s", url, exc)
-                continue
+            for attempt in range(1, 3):
+                try:
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code == 404:
+                        break
+                    if resp.status_code in _RETRYABLE_STATUSES and attempt == 1:
+                        await asyncio.sleep(1.2)
+                        continue
+                    resp.raise_for_status()
+                    content_type = (
+                        (resp.headers.get("content-type") or "image/jpeg")
+                        .split(";")[0]
+                        .strip()
+                    )
+                    if not content_type.startswith("image/"):
+                        content_type = "image/jpeg"
+                    if resp.content:
+                        return resp.content, content_type
+                    break
+                except httpx.HTTPError as exc:
+                    logger.debug("Cover Art Archive fetch failed for %s: %s", url, exc)
+                    break
 
     return None
