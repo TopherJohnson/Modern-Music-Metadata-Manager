@@ -190,6 +190,7 @@ class AlbumGroup(BaseModel):
     artwork_variants: list[ArtworkVariant] = Field(default_factory=list)
     navidrome_warnings: list[NavidromeSplitWarning] = Field(default_factory=list)
     has_missing_metadata: bool = False
+    needs_reorganize: bool = False
     tracks: list[TrackMetadata] = Field(default_factory=list)
 
 
@@ -333,4 +334,72 @@ class MusicBrainzApplyTrackResponse(TrackUpdateResponse):
 
     artwork_applied: bool = False
     artwork_note: str | None = None
+
+
+class OrganizeSettings(BaseModel):
+    """Persisted user preferences for library folder organization."""
+
+    enabled: bool = False
+    # Presets: "artist_album" | "artist_year_album" | "album_only" | "album_with_artist"
+    template: str = "artist_album"
+    rename_files: bool = False
+    compilation_folder: str = "Various Artists"
+    cleanup_empty_dirs: bool = True
+    skip_missing_metadata: bool = True
+
+
+class MovePlanItem(BaseModel):
+    """Single file entry in an organization dry-run plan."""
+
+    source_path: str
+    target_path: str
+    album: str
+    artist: str
+    # "move" | "unchanged" | "skipped" | "conflict"
+    status: str
+    reason: str | None = None
+
+
+class OrganizePreviewRequest(BaseModel):
+    """Optional filter and unsaved settings override for dry-run reorganization preview."""
+
+    paths: list[str] | None = None
+    settings: OrganizeSettings | None = None
+
+
+class OrganizePreviewResponse(BaseModel):
+    """Dry-run summary and list of planned file moves."""
+
+    settings: OrganizeSettings
+    total_tracks: int
+    moves_count: int
+    unchanged_count: int
+    skipped_count: int
+    conflict_count: int
+    items: list[MovePlanItem] = Field(default_factory=list)
+
+
+class OrganizeApplyRequest(BaseModel):
+    """Execute planned moves for the specified source paths (or all planned moves if paths omitted)."""
+
+    paths: list[str] | None = None
+    settings: OrganizeSettings | None = None
+    trigger_navidrome_scan: bool = True
+
+
+class OrganizeMoveResult(BaseModel):
+    """Completed file move record."""
+
+    source_path: str
+    target_path: str
+
+
+class OrganizeApplyResponse(BaseModel):
+    """Outcome of executing library reorganization."""
+
+    moved: list[OrganizeMoveResult] = Field(default_factory=list)
+    skipped: int = 0
+    errors: list[BulkUpdateError] = Field(default_factory=list)
+    removed_empty_dirs: int = 0
+    navidrome_sync: NavidromeSyncResult
 

@@ -19,8 +19,10 @@ from app.models import (
     LibraryResponse,
     LibraryStats,
     NavidromeSplitWarning,
+    OrganizeSettings,
     TrackMetadata,
 )
+from app.services.organizer import track_needs_reorganize
 from app.services.tags import read_track_metadata
 
 logger = logging.getLogger(__name__)
@@ -318,6 +320,7 @@ def build_library_response(
     tracks: list[TrackMetadata],
     *,
     query: str | None = None,
+    organize_settings: OrganizeSettings | None = None,
 ) -> LibraryResponse:
     """Group a flat track list into Artist -> Album -> Track hierarchy with optional filtering."""
     filtered = tracks
@@ -370,6 +373,26 @@ def build_library_response(
             has_missing_metadata = any(
                 w.severity == "missing" for w in navidrome_warnings
             )
+
+            needs_reorganize = False
+            if organize_settings and organize_settings.enabled:
+                out_of_place = sum(
+                    1
+                    for t in sorted_tracks
+                    if track_needs_reorganize(t, organize_settings)
+                )
+                if out_of_place > 0:
+                    needs_reorganize = True
+                    navidrome_warnings.append(
+                        NavidromeSplitWarning(
+                            field="folder_structure",
+                            label="Folder Structure",
+                            severity="structure",
+                            message=f"{out_of_place} of {len(sorted_tracks)} track{'s' if len(sorted_tracks) != 1 else ''} don't match your configured folder layout.",
+                            values=[],
+                        )
+                    )
+
             album_duration = round(sum(t.duration for t in sorted_tracks), 2)
 
             album_groups.append(
@@ -386,6 +409,7 @@ def build_library_response(
                     artwork_variants=artwork_variants,
                     navidrome_warnings=navidrome_warnings,
                     has_missing_metadata=has_missing_metadata,
+                    needs_reorganize=needs_reorganize,
                     tracks=sorted_tracks,
                 )
             )

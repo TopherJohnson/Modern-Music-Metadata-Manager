@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Disc3,
   FolderOpen,
+  FolderTree,
   Globe,
   Images,
   Layers,
@@ -14,7 +15,7 @@ import {
 import { formatDuration, getArtworkUrl } from "../api/client";
 import type { AlbumGroup, ArtistGroup, TrackMetadata } from "../types/music";
 
-export type AlbumFilterMode = "all" | "mismatches" | "missing";
+export type AlbumFilterMode = "all" | "mismatches" | "missing" | "structure";
 
 interface TrackListProps {
   artists: ArtistGroup[];
@@ -22,6 +23,7 @@ interface TrackListProps {
   selectedTrackPath: string | null;
   isBulkEditingAlbum: boolean;
   albumFilter: AlbumFilterMode;
+  organizeEnabled: boolean;
   artworkRevision: number;
   loading: boolean;
   musicDir: string;
@@ -31,6 +33,7 @@ interface TrackListProps {
   onStartBulkEdit: (album: AlbumGroup) => void;
   onIdentifyAlbum: (album: AlbumGroup) => void;
   onIdentifyTrack: (track: TrackMetadata) => void;
+  onOrganizeAlbum: (album: AlbumGroup) => void;
   onChangeAlbumFilter: (filter: AlbumFilterMode) => void;
   onRescan: () => void;
 }
@@ -77,6 +80,7 @@ export function TrackList({
   selectedTrackPath,
   isBulkEditingAlbum,
   albumFilter,
+  organizeEnabled,
   artworkRevision,
   loading,
   musicDir,
@@ -86,6 +90,7 @@ export function TrackList({
   onStartBulkEdit,
   onIdentifyAlbum,
   onIdentifyTrack,
+  onOrganizeAlbum,
   onChangeAlbumFilter,
   onRescan,
 }: TrackListProps) {
@@ -139,13 +144,18 @@ export function TrackList({
     const mismatchedCount = allAlbums.filter(({ album }) =>
       hasMismatchWarning(album)
     ).length;
+    const structureCount = allAlbums.filter(
+      ({ album }) => album.needs_reorganize
+    ).length;
 
     const visibleAlbums =
       albumFilter === "missing"
         ? allAlbums.filter(({ album }) => album.has_missing_metadata)
         : albumFilter === "mismatches"
           ? allAlbums.filter(({ album }) => hasMismatchWarning(album))
-          : allAlbums;
+          : albumFilter === "structure"
+            ? allAlbums.filter(({ album }) => album.needs_reorganize)
+            : allAlbums;
 
     const toggleFilter = (target: Exclude<AlbumFilterMode, "all">) => {
       onChangeAlbumFilter(albumFilter === target ? "all" : target);
@@ -236,6 +246,43 @@ export function TrackList({
               </span>
             </button>
 
+            {/* Folder Structure Drift Filter (visible when Folder Organization monitoring is enabled) */}
+            {organizeEnabled && (
+              <button
+                id="filter-structure-toggle"
+                type="button"
+                role="switch"
+                aria-checked={albumFilter === "structure"}
+                onClick={() => toggleFilter("structure")}
+                className={`inline-flex h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium transition-colors cursor-pointer ${
+                  albumFilter === "structure"
+                    ? "border-accent bg-accent-soft text-accent"
+                    : "border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
+                }`}
+                title="Show only albums whose files don't match your configured folder structure"
+              >
+                <FolderTree
+                  className={`h-3.5 w-3.5 ${
+                    albumFilter === "structure" || structureCount > 0
+                      ? "text-accent"
+                      : "text-ink-muted"
+                  }`}
+                />
+                <span>Folder Drift</span>
+                <span
+                  className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${
+                    albumFilter === "structure"
+                      ? "bg-accent text-[#14110c] font-semibold"
+                      : structureCount > 0
+                        ? "bg-surface-elevated text-accent"
+                        : "bg-surface-elevated text-ink-muted"
+                  }`}
+                >
+                  {structureCount}
+                </span>
+              </button>
+            )}
+
             <span className="ml-1 font-mono text-xs text-ink-muted">
               {visibleAlbums.length}{" "}
               {visibleAlbums.length === 1 ? "album" : "albums"}
@@ -249,12 +296,16 @@ export function TrackList({
             <h3 className="mt-3 text-sm font-semibold text-ink-primary">
               {albumFilter === "missing"
                 ? "No tracks missing major metadata"
-                : "All albums look clean"}
+                : albumFilter === "structure"
+                  ? "Folder structure is fully organized"
+                  : "All albums look clean"}
             </h3>
             <p className="mt-1 max-w-xs text-xs text-ink-secondary">
               {albumFilter === "missing"
                 ? "Every track in your library has Title, Artist, and Album tags populated."
-                : "No Navidrome split-album tag mismatches or inconsistent album covers detected."}
+                : albumFilter === "structure"
+                  ? "All eligible albums match your configured library folder layout."
+                  : "No Navidrome split-album tag mismatches or inconsistent album covers detected."}
             </p>
             <button
               type="button"
@@ -290,7 +341,7 @@ export function TrackList({
                       sizeClass="h-full w-full transition-transform duration-200 group-hover:scale-[1.02]"
                     />
 
-                    {/* Top-right status badges: Red for Major Missing Metadata, Amber for Mismatch */}
+                    {/* Top-right status badges */}
                     <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
                       {album.has_missing_metadata && (
                         <div
@@ -316,6 +367,14 @@ export function TrackList({
                             <Images className="h-3 w-3" />
                           )}
                           {splitCount > 0 ? splitCount : album.artwork_variants.length}
+                        </div>
+                      )}
+                      {album.needs_reorganize && (
+                        <div
+                          className="flex items-center gap-1 rounded-md border border-border-strong bg-canvas/90 px-1.5 py-0.5 text-[10px] font-medium text-ink-primary backdrop-blur-xs"
+                          title="Album folder path doesn't match your configured layout"
+                        >
+                          <FolderTree className="h-3 w-3 text-accent" />
                         </div>
                       )}
                     </div>
@@ -529,6 +588,33 @@ export function TrackList({
                 </button>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Folder Structure Drift Notice */}
+        {selectedAlbum.needs_reorganize && (
+          <div
+            id="folder-structure-banner"
+            className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border-subtle bg-canvas/70 px-4 py-2.5"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <FolderTree className="h-4 w-4 shrink-0 text-accent" />
+              <p className="truncate text-xs text-ink-secondary">
+                <span className="font-medium text-ink-primary">
+                  Folder structure drift:
+                </span>{" "}
+                {selectedAlbum.navidrome_warnings.find((w) => w.severity === "structure")
+                  ?.message || "Files in this album don't match your configured folder layout."}
+              </p>
+            </div>
+            <button
+              id="reorganize-album-btn"
+              type="button"
+              onClick={() => onOrganizeAlbum(selectedAlbum)}
+              className="m4-btn-secondary shrink-0 h-7 px-2.5 text-[11px]"
+            >
+              Reorganize Album
+            </button>
           </div>
         )}
       </section>

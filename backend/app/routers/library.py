@@ -22,7 +22,9 @@ async def get_library(
     db = request.app.state.db
 
     tracks = scan_library(settings.music_dir, db, force_rescan=rescan)
-    return build_library_response(tracks, query=q)
+    return build_library_response(
+        tracks, query=q, organize_settings=db.get_organize_settings()
+    )
 
 
 @router.post("/library/scan", response_model=LibraryResponse)
@@ -32,7 +34,9 @@ async def post_library_scan(request: Request) -> LibraryResponse:
     db = request.app.state.db
 
     tracks = scan_library(settings.music_dir, db, force_rescan=True)
-    return build_library_response(tracks)
+    return build_library_response(
+        tracks, organize_settings=db.get_organize_settings()
+    )
 
 
 @router.get("/history", response_model=list[AuditEntry])

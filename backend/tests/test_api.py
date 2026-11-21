@@ -530,4 +530,78 @@ def test_missing_major_metadata_and_single_track_identify(
     assert tbk["albums"][0]["has_missing_metadata"] is False
 
 
+def test_library_folder_organization_preview_and_apply(client: TestClient) -> None:
+    music_dir = client.app.state.settings.music_dir
+
+    # Default settings start disabled
+    initial = client.get("/api/settings/organize").json()
+    assert initial["enabled"] is False
+    assert initial["template"] == "artist_album"
+
+    # Enable Album-only layout + filename standardization
+    saved = client.put(
+        "/api/settings/organize",
+        json={
+            "enabled": True,
+            "template": "album_only",
+            "rename_files": True,
+            "compilation_folder": "Various Artists",
+            "cleanup_empty_dirs": True,
+            "skip_missing_metadata": True,
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["template"] == "album_only"
+
+    # Library now flags the album as needing reorganization
+    lib = client.get("/api/library").json()
+    album = lib["artists"][0]["albums"][0]
+    assert album["needs_reorganize"] is True
+    assert any(w["severity"] == "structure" for w in album["navidrome_warnings"])
+
+    # Add an untagged file to verify skip_missing_metadata protects it
+    stray = music_dir / "random_untagged.mp3"
+    stray.write_bytes((b"\xff\xfb\x90\x00" + b"\x00" * 413) * 4)
+
+    # Dry-run preview shows 2 moves and 1 skipped untagged file
+    preview = client.post("/api/organize/preview", json={}).json()
+    assert preview["moves_count"] == 2
+    assert preview["skipped_count"] == 1
+    assert preview["conflict_count"] == 0
+    targets = {
+        item["target_path"]
+        for item in preview["items"]
+        if item["status"] == "move"
+    }
+    assert targets == {
+        "Geogaddi/01 - Intro.mp3",
+        "Geogaddi/02 - Music Is Math.flac",
+    }
+
+    # Execute moves
+    apply_res = client.post("/api/organize/apply", json={})
+    assert apply_res.status_code == 200
+    body = apply_res.json()
+    assert len(body["moved"]) == 2
+    assert body["errors"] == []
+    assert body["removed_empty_dirs"] >= 2
+
+    # Files exist at new flat Album/ paths and old empty Artist/Album dirs are gone
+    assert (music_dir / "Geogaddi" / "01 - Intro.mp3").is_file()
+    assert (music_dir / "Geogaddi" / "02 - Music Is Math.flac").is_file()
+    assert not (music_dir / "Boards of Canada").exists()
+    # Untagged file stayed untouched
+    assert stray.is_file()
+
+    # After moving, Geogaddi no longer reports folder structure drift
+    lib_after = client.get("/api/library").json()
+    boc = next(a for a in lib_after["artists"] if a["name"] == "Boards of Canada")
+    assert boc["albums"][0]["needs_reorganize"] is False
+
+    # Move events recorded in audit history
+    history = client.get("/api/history").json()
+    assert any(entry["action"] == "move_track" for entry in history)
+
+
+
 

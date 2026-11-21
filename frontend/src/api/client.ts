@@ -10,6 +10,9 @@ import type {
   MusicBrainzReleaseCandidate,
   MusicBrainzTrackCandidate,
   NavidromeSyncResult,
+  OrganizeApplyResponse,
+  OrganizePreviewResponse,
+  OrganizeSettings,
   RawTagsResponse,
   TrackMetadata,
   TrackUpdatePayload,
@@ -177,6 +180,49 @@ export function applyMusicBrainzTrack(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+}
+
+export function getOrganizeSettings(): Promise<OrganizeSettings> {
+  return requestJson<OrganizeSettings>("/api/settings/organize");
+}
+
+export function saveOrganizeSettings(
+  settings: OrganizeSettings
+): Promise<OrganizeSettings> {
+  return requestJson<OrganizeSettings>("/api/settings/organize", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+export function previewOrganize(
+  settings?: OrganizeSettings,
+  paths?: string[]
+): Promise<OrganizePreviewResponse> {
+  return requestJson<OrganizePreviewResponse>("/api/organize/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      settings: settings ?? null,
+      paths: paths ?? null,
+    }),
+  });
+}
+
+export function applyOrganize(
+  settings?: OrganizeSettings,
+  paths?: string[]
+): Promise<OrganizeApplyResponse> {
+  return requestJson<OrganizeApplyResponse>("/api/organize/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      settings: settings ?? null,
+      paths: paths ?? null,
+      trigger_navidrome_scan: true,
+    }),
   });
 }
 

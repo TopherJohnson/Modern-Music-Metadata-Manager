@@ -105,6 +105,9 @@ Modern-Music-Metadata-Manager/
 | `GET` | `/api/musicbrainz/cover/{mbid}` | Proxy Cover Art Archive front cover preview |
 | `POST` | `/api/musicbrainz/apply` | Apply a chosen MusicBrainz release's tags and/or cover art to an album |
 | `POST` | `/api/musicbrainz/apply/track` | Apply a chosen MusicBrainz recording/release match to a single track |
+| `GET/PUT` | `/api/settings/organize` | Read or update persisted library folder structure preferences |
+| `POST` | `/api/organize/preview` | Generate a dry-run preview of planned folder/filename moves |
+| `POST` | `/api/organize/apply` | Execute planned library reorganization moves and prune empty folders |
 
 ---
 

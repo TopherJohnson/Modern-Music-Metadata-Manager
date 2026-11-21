@@ -65,7 +65,7 @@ export interface ArtworkVariant {
 export interface NavidromeSplitWarning {
   field: string;
   label: string;
-  severity: "missing" | "split" | "artwork" | string;
+  severity: "missing" | "split" | "artwork" | "structure" | string;
   message: string;
   values: string[];
 }
@@ -83,6 +83,7 @@ export interface AlbumGroup {
   artwork_variants: ArtworkVariant[];
   navidrome_warnings: NavidromeSplitWarning[];
   has_missing_metadata: boolean;
+  needs_reorganize: boolean;
   tracks: TrackMetadata[];
 }
 
@@ -223,4 +224,51 @@ export interface MusicBrainzApplyTrackPayload {
 export interface MusicBrainzApplyTrackResponse extends TrackUpdateResponse {
   artwork_applied: boolean;
   artwork_note: string | null;
+}
+
+export type FolderTemplate =
+  | "artist_album"
+  | "artist_year_album"
+  | "album_only"
+  | "album_with_artist";
+
+export interface OrganizeSettings {
+  enabled: boolean;
+  template: FolderTemplate;
+  rename_files: boolean;
+  compilation_folder: string;
+  cleanup_empty_dirs: boolean;
+  skip_missing_metadata: boolean;
+}
+
+export interface MovePlanItem {
+  source_path: string;
+  target_path: string;
+  album: string;
+  artist: string;
+  status: "move" | "unchanged" | "skipped" | "conflict";
+  reason: string | null;
+}
+
+export interface OrganizePreviewResponse {
+  settings: OrganizeSettings;
+  total_tracks: number;
+  moves_count: number;
+  unchanged_count: number;
+  skipped_count: number;
+  conflict_count: number;
+  items: MovePlanItem[];
+}
+
+export interface OrganizeMoveResult {
+  source_path: string;
+  target_path: string;
+}
+
+export interface OrganizeApplyResponse {
+  moved: OrganizeMoveResult[];
+  skipped: number;
+  errors: BulkUpdateError[];
+  removed_empty_dirs: number;
+  navidrome_sync: NavidromeSyncResult;
 }

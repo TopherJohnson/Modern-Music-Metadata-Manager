@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyMusicBrainzRelease,
   applyMusicBrainzTrack,
+  applyOrganize,
   copyArtwork,
   deleteArtwork,
   getHealth,
   getLibrary,
+  getOrganizeSettings,
   getTrack,
+  saveOrganizeSettings,
   triggerLibraryScan,
   triggerNavidromeScan,
   updateTrack,
@@ -20,6 +23,7 @@ import {
   type MusicBrainzModalMode,
 } from "./components/MusicBrainzModal";
 import { MusicBrainzTrackModal } from "./components/MusicBrainzTrackModal";
+import { OrganizeModal } from "./components/OrganizeModal";
 import { Sidebar } from "./components/Sidebar";
 import { Toast, type ToastMessage } from "./components/Toast";
 import { TrackList, type AlbumFilterMode } from "./components/TrackList";
@@ -31,9 +35,19 @@ import type {
   MusicBrainzApplyPayload,
   MusicBrainzApplyTrackPayload,
   NavidromeSyncResult,
+  OrganizeSettings,
   TrackMetadata,
   TrackTags,
 } from "./types/music";
+
+const DEFAULT_ORGANIZE_SETTINGS: OrganizeSettings = {
+  enabled: false,
+  template: "artist_album",
+  rename_files: false,
+  compilation_folder: "Various Artists",
+  cleanup_empty_dirs: true,
+  skip_missing_metadata: true,
+};
 
 function findAlbumAndTrackByPath(
   artists: ArtistGroup[],
@@ -93,6 +107,20 @@ export function App() {
     targetPaths: [],
     localTrackCount: 0,
   });
+  const [organizeSettings, setOrganizeSettings] = useState<OrganizeSettings>(
+    DEFAULT_ORGANIZE_SETTINGS
+  );
+  const [savingOrganize, setSavingOrganize] = useState(false);
+  const [applyingOrganize, setApplyingOrganize] = useState(false);
+  const [organizeModal, setOrganizeModal] = useState<{
+    open: boolean;
+    scopeLabel: string | null;
+    scopePaths: string[] | null;
+  }>({
+    open: false,
+    scopeLabel: null,
+    scopePaths: null,
+  });
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -146,6 +174,11 @@ export function App() {
 
   useEffect(() => {
     void refreshHealth();
+    void getOrganizeSettings()
+      .then((s) => setOrganizeSettings(s))
+      .catch(() => {
+        // fallback to default settings
+      });
   }, [refreshHealth]);
 
   useEffect(() => {
@@ -153,6 +186,17 @@ export function App() {
   }, [debouncedQuery, fetchLibrary]);
 
   const artists = library?.artists ?? [];
+
+  const structureDriftCount = useMemo(() => {
+    if (!organizeSettings.enabled) return 0;
+    let count = 0;
+    for (const artist of artists) {
+      for (const album of artist.albums) {
+        if (album.needs_reorganize) count += 1;
+      }
+    }
+    return count;
+  }, [artists, organizeSettings.enabled]);
 
   const selectedAlbum = useMemo<AlbumGroup | null>(() => {
     if (!selectedAlbumId) return null;
@@ -528,6 +572,102 @@ export function App() {
     }
   };
 
+  const handleOpenOrganizeLibrary = () => {
+    setOrganizeModal({
+      open: true,
+      scopeLabel: null,
+      scopePaths: null,
+    });
+  };
+
+  const handleOrganizeAlbum = (album: AlbumGroup) => {
+    setOrganizeModal({
+      open: true,
+      scopeLabel: `${album.artist} — ${album.title}`,
+      scopePaths: album.tracks.map((t) => t.path),
+    });
+  };
+
+  const handleSaveOrganizeSettings = async (next: OrganizeSettings) => {
+    setSavingOrganize(true);
+    try {
+      const saved = await saveOrganizeSettings(next);
+      setOrganizeSettings(saved);
+      if (!saved.enabled && albumFilter === "structure") {
+        setAlbumFilter("all");
+      }
+      await fetchLibrary(debouncedQuery, { silent: true });
+      showToast(
+        "success",
+        "Saved folder organization preferences",
+        saved.enabled
+          ? "Drift notifications are active across your library."
+          : "Drift notifications are turned off."
+      );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not save organization settings";
+      showToast("error", "Save failed", msg);
+    } finally {
+      setSavingOrganize(false);
+    }
+  };
+
+  const handleApplyOrganize = async (
+    activeSettings: OrganizeSettings,
+    selectedPaths: string[]
+  ) => {
+    setApplyingOrganize(true);
+    try {
+      const response = await applyOrganize(activeSettings, selectedPaths);
+      // Update selected track path if it moved
+      if (selectedTrackPath) {
+        const movedMatch = response.moved.find(
+          (m) => m.source_path === selectedTrackPath
+        );
+        if (movedMatch) {
+          setSelectedTrackPath(movedMatch.target_path);
+          setLiveTrack(null);
+        }
+      }
+      await fetchLibrary(debouncedQuery, { silent: true });
+      setOrganizeModal({ open: false, scopeLabel: null, scopePaths: null });
+
+      const notes = [
+        response.removed_empty_dirs > 0
+          ? `Removed ${response.removed_empty_dirs} empty ${
+              response.removed_empty_dirs === 1 ? "folder" : "folders"
+            }.`
+          : null,
+        formatNavidromeNote(response.navidrome_sync),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (response.errors.length > 0) {
+        showToast(
+          "error",
+          `Moved ${response.moved.length} file(s), ${response.errors.length} failed`,
+          response.errors[0].error
+        );
+      } else {
+        showToast(
+          "success",
+          `Moved ${response.moved.length} ${
+            response.moved.length === 1 ? "file" : "files"
+          }`,
+          notes || undefined
+        );
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Library reorganization failed";
+      showToast("error", "Reorganization failed", msg);
+    } finally {
+      setApplyingOrganize(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col bg-canvas text-ink-primary">
       <Header
@@ -537,6 +677,8 @@ export function App() {
         scanning={scanning}
         onNavidromeSync={handleNavidromeSync}
         syncingNavidrome={syncingNavidrome}
+        onOpenOrganize={handleOpenOrganizeLibrary}
+        structureDriftCount={structureDriftCount}
         health={health}
         trackCount={library?.stats.track_count ?? health?.cached_tracks ?? 0}
       />
@@ -556,6 +698,7 @@ export function App() {
           selectedTrackPath={selectedTrackPath}
           isBulkEditingAlbum={isBulkMode}
           albumFilter={albumFilter}
+          organizeEnabled={organizeSettings.enabled}
           artworkRevision={artworkRevision}
           loading={loading}
           musicDir={health?.music_dir ?? "/music"}
@@ -565,6 +708,7 @@ export function App() {
           onStartBulkEdit={handleStartBulkEdit}
           onIdentifyAlbum={handleIdentifyAlbum}
           onIdentifyTrack={handleIdentifyTrack}
+          onOrganizeAlbum={handleOrganizeAlbum}
           onChangeAlbumFilter={setAlbumFilter}
           onRescan={handleRescan}
         />
@@ -603,6 +747,20 @@ export function App() {
         applying={applyingMb}
         onClose={() => setTrackMbTarget(null)}
         onApply={handleApplyMusicBrainzTrack}
+      />
+
+      <OrganizeModal
+        open={organizeModal.open}
+        savedSettings={organizeSettings}
+        scopeLabel={organizeModal.scopeLabel}
+        scopePaths={organizeModal.scopePaths}
+        savingSettings={savingOrganize}
+        applyingMoves={applyingOrganize}
+        onClose={() =>
+          setOrganizeModal({ open: false, scopeLabel: null, scopePaths: null })
+        }
+        onSaveSettings={handleSaveOrganizeSettings}
+        onApplyMoves={handleApplyOrganize}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />

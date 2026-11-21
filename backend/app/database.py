@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.models import AuditEntry, TrackMetadata
+from app.models import AuditEntry, OrganizeSettings, TrackMetadata
 
 
 SCHEMA_SQL = """
@@ -257,6 +257,35 @@ class Database:
             )
             for row in rows
         ]
+
+    def get_organize_settings(self) -> OrganizeSettings:
+        """Load persisted library folder organization preferences from app_settings."""
+        if not self.db_path.exists():
+            return OrganizeSettings()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                ("organize_settings",),
+            ).fetchone()
+        if not row:
+            return OrganizeSettings()
+        try:
+            return OrganizeSettings.model_validate_json(row["value"])
+        except Exception:
+            return OrganizeSettings()
+
+    def save_organize_settings(self, settings: OrganizeSettings) -> OrganizeSettings:
+        """Persist library folder organization preferences in app_settings."""
+        payload = settings.model_dump_json()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                ("organize_settings", payload),
+            )
+        return settings
 
     @staticmethod
     def _row_to_track(row: sqlite3.Row) -> TrackMetadata:

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
   Disc3,
+  FolderTree,
   HardDrive,
   Radio,
   RefreshCw,
@@ -16,6 +17,8 @@ interface HeaderProps {
   scanning: boolean;
   onNavidromeSync: () => void;
   syncingNavidrome: boolean;
+  onOpenOrganize: () => void;
+  structureDriftCount: number;
   health: HealthResponse | null;
   trackCount: number;
 }
@@ -27,6 +30,8 @@ export function Header({
   scanning,
   onNavidromeSync,
   syncingNavidrome,
+  onOpenOrganize,
+  structureDriftCount,
   health,
   trackCount,
 }: HeaderProps) {
@@ -122,6 +127,26 @@ export function Header({
             <span className="hidden md:inline">Navidrome</span>
           </button>
         )}
+
+        <button
+          id="open-organize-btn"
+          type="button"
+          onClick={onOpenOrganize}
+          className="m4-btn-secondary h-8 px-2.5 text-xs"
+          title="Library folder structure settings & mass organizer"
+        >
+          <FolderTree
+            className={`h-3.5 w-3.5 ${
+              structureDriftCount > 0 ? "text-accent" : "text-ink-secondary"
+            }`}
+          />
+          <span className="hidden md:inline">Organize</span>
+          {structureDriftCount > 0 && (
+            <span className="rounded-full bg-accent-soft px-1.5 py-0.2 font-mono text-[10px] font-semibold text-accent">
+              {structureDriftCount}
+            </span>
+          )}
+        </button>
 
         <button
           id="rescan-library-btn"
