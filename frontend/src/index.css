@@ -57,88 +57,90 @@
   }
 }
 
-/* Studio-grade form inputs */
-.m4-input {
-  width: 100%;
-  border-radius: 0.5rem;
-  border: 1px solid var(--color-border-subtle);
-  background-color: var(--color-canvas);
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  color: var(--color-ink-primary);
-  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
-}
+@layer components {
+  /* Studio-grade form inputs */
+  .m4-input {
+    width: 100%;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-border-subtle);
+    background-color: var(--color-canvas);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    color: var(--color-ink-primary);
+    transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+  }
 
-.m4-input::placeholder {
-  color: var(--color-ink-muted);
-}
+  .m4-input::placeholder {
+    color: var(--color-ink-muted);
+  }
 
-.m4-input:hover {
-  border-color: var(--color-border-strong);
-}
+  .m4-input:hover {
+    border-color: var(--color-border-strong);
+  }
 
-.m4-input:focus {
-  outline: none;
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 22%, transparent);
-}
+  .m4-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 22%, transparent);
+  }
 
-.m4-input-dirty {
-  border-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-border-subtle));
-  background-color: color-mix(in srgb, var(--color-accent) 6%, var(--color-canvas));
-}
+  .m4-input-dirty {
+    border-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-border-subtle));
+    background-color: color-mix(in srgb, var(--color-accent) 6%, var(--color-canvas));
+  }
 
-.m4-btn-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.45rem;
-  border-radius: 0.5rem;
-  background-color: var(--color-accent);
-  color: #14110c;
-  font-weight: 600;
-  font-size: 0.8125rem;
-  padding: 0.5rem 0.9rem;
-  cursor: pointer;
-  transition: background-color 140ms ease, transform 100ms ease, opacity 140ms ease;
-}
+  .m4-btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    border-radius: 0.5rem;
+    background-color: var(--color-accent);
+    color: #14110c;
+    font-weight: 600;
+    font-size: 0.8125rem;
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    transition: background-color 140ms ease, transform 100ms ease, opacity 140ms ease;
+  }
 
-.m4-btn-primary:hover:not(:disabled) {
-  background-color: var(--color-accent-hover);
-}
+  .m4-btn-primary:hover:not(:disabled) {
+    background-color: var(--color-accent-hover);
+  }
 
-.m4-btn-primary:active:not(:disabled) {
-  transform: translateY(0.5px);
-}
+  .m4-btn-primary:active:not(:disabled) {
+    transform: translateY(0.5px);
+  }
 
-.m4-btn-primary:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
+  .m4-btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
 
-.m4-btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.45rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--color-border-subtle);
-  background-color: var(--color-surface-elevated);
-  color: var(--color-ink-primary);
-  font-weight: 500;
-  font-size: 0.8125rem;
-  padding: 0.475rem 0.85rem;
-  cursor: pointer;
-  transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease;
-}
+  .m4-btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-border-subtle);
+    background-color: var(--color-surface-elevated);
+    color: var(--color-ink-primary);
+    font-weight: 500;
+    font-size: 0.8125rem;
+    padding: 0.475rem 0.85rem;
+    cursor: pointer;
+    transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease;
+  }
 
-.m4-btn-secondary:hover:not(:disabled) {
-  background-color: var(--color-surface-hover);
-  border-color: var(--color-border-strong);
-}
+  .m4-btn-secondary:hover:not(:disabled) {
+    background-color: var(--color-surface-hover);
+    border-color: var(--color-border-strong);
+  }
 
-.m4-btn-secondary:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+  .m4-btn-secondary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
 }

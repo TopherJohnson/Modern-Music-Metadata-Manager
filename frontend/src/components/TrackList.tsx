@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   ArrowLeft,
+  CheckCircle2,
   Disc3,
   FolderOpen,
   Globe,
@@ -17,6 +18,7 @@ interface TrackListProps {
   selectedAlbum: AlbumGroup | null;
   selectedTrackPath: string | null;
   isBulkEditingAlbum: boolean;
+  onlyMismatches: boolean;
   artworkRevision: number;
   loading: boolean;
   musicDir: string;
@@ -25,6 +27,7 @@ interface TrackListProps {
   onSelectTrack: (track: TrackMetadata) => void;
   onStartBulkEdit: (album: AlbumGroup) => void;
   onIdentifyAlbum: (album: AlbumGroup) => void;
+  onToggleOnlyMismatches: () => void;
   onRescan: () => void;
 }
 
@@ -63,6 +66,7 @@ export function TrackList({
   selectedAlbum,
   selectedTrackPath,
   isBulkEditingAlbum,
+  onlyMismatches,
   artworkRevision,
   loading,
   musicDir,
@@ -71,6 +75,7 @@ export function TrackList({
   onSelectTrack,
   onStartBulkEdit,
   onIdentifyAlbum,
+  onToggleOnlyMismatches,
   onRescan,
 }: TrackListProps) {
   if (loading) {
@@ -117,9 +122,16 @@ export function TrackList({
   }
 
   if (!selectedAlbum) {
+    const mismatchedCount = allAlbums.filter(
+      ({ album }) => album.navidrome_warnings.length > 0
+    ).length;
+    const visibleAlbums = onlyMismatches
+      ? allAlbums.filter(({ album }) => album.navidrome_warnings.length > 0)
+      : allAlbums;
+
     return (
       <main className="flex-1 overflow-y-auto bg-canvas p-6">
-        <div className="mb-5 flex items-baseline justify-between">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold tracking-tight text-ink-primary">
               Library Albums
@@ -128,69 +140,128 @@ export function TrackList({
               Select an album to inspect tracks or batch-edit tags
             </p>
           </div>
-          <span className="font-mono text-xs text-ink-muted">
-            {allAlbums.length} {allAlbums.length === 1 ? "album" : "albums"}
-          </span>
+
+          <div className="flex items-center gap-3">
+            <button
+              id="filter-mismatches-toggle"
+              type="button"
+              role="switch"
+              aria-checked={onlyMismatches}
+              onClick={onToggleOnlyMismatches}
+              className={`inline-flex h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium transition-colors cursor-pointer ${
+                onlyMismatches
+                  ? "border-accent bg-accent-soft text-accent"
+                  : "border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
+              }`}
+              title="Show only albums with Navidrome tag or cover art mismatches"
+            >
+              <AlertTriangle
+                className={`h-3.5 w-3.5 ${
+                  onlyMismatches
+                    ? "text-accent"
+                    : mismatchedCount > 0
+                      ? "text-warn"
+                      : "text-ink-muted"
+                }`}
+              />
+              <span>Mismatches only</span>
+              <span
+                className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${
+                  onlyMismatches
+                    ? "bg-accent text-[#14110c] font-semibold"
+                    : mismatchedCount > 0
+                      ? "bg-surface-elevated text-warn"
+                      : "bg-surface-elevated text-ink-muted"
+                }`}
+              >
+                {mismatchedCount}
+              </span>
+            </button>
+
+            <span className="font-mono text-xs text-ink-muted">
+              {visibleAlbums.length}{" "}
+              {visibleAlbums.length === 1 ? "album" : "albums"}
+            </span>
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          {allAlbums.map(({ artist, album }) => {
-            const splitCount = album.navidrome_warnings.filter(
-              (w) => w.severity === "split"
-            ).length;
-            const multiCovers = album.artwork_variants.length > 1;
-            return (
-              <button
-                key={album.id}
-                type="button"
-                onClick={() => onSelectAlbum(artist, album)}
-                className="group relative flex flex-col rounded-xl border border-border-subtle bg-surface p-3 text-left transition-colors hover:border-border-strong hover:bg-surface-elevated cursor-pointer"
-              >
-                <div className="relative aspect-square w-full overflow-hidden rounded-lg">
-                  <AlbumCover
-                    coverPath={album.cover_track_path}
-                    alt={`${album.title} cover`}
-                    revision={artworkRevision}
-                    sizeClass="h-full w-full transition-transform duration-200 group-hover:scale-[1.02]"
-                  />
-                  {(splitCount > 0 || multiCovers) && (
-                    <div
-                      className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-border-strong bg-canvas/90 px-1.5 py-0.5 text-[10px] font-medium text-warn backdrop-blur-xs"
-                      title={
-                        splitCount > 0
-                          ? `${splitCount} Navidrome split-album tag mismatch(es)`
-                          : `${album.artwork_variants.length} distinct cover images`
-                      }
-                    >
-                      {splitCount > 0 ? (
-                        <AlertTriangle className="h-3 w-3" />
-                      ) : (
-                        <Images className="h-3 w-3" />
-                      )}
-                      {splitCount > 0 ? splitCount : album.artwork_variants.length}
-                    </div>
-                  )}
-                </div>
-                <div className="mt-3 min-w-0">
-                  <p className="truncate text-xs font-semibold text-ink-primary group-hover:text-accent transition-colors">
-                    {album.title}
-                  </p>
-                  <p className="mt-0.5 truncate text-xs text-ink-secondary">
-                    {album.artist}
-                  </p>
-                  <div className="mt-2 flex items-center justify-between gap-1 text-[10px] font-mono text-ink-muted">
-                    <span>
-                      {album.year ? album.year.slice(0, 4) : "—"} · {album.track_count}t
-                    </span>
-                    <span className="rounded border border-border-subtle bg-canvas px-1.5 py-0.5 text-[10px] uppercase text-ink-secondary">
-                      {album.formats.join("/")}
-                    </span>
+        {visibleAlbums.length === 0 && onlyMismatches ? (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-border-subtle bg-surface/60 px-6 py-14 text-center">
+            <CheckCircle2 className="h-8 w-8 text-ok" />
+            <h3 className="mt-3 text-sm font-semibold text-ink-primary">
+              All albums look clean
+            </h3>
+            <p className="mt-1 max-w-xs text-xs text-ink-secondary">
+              No Navidrome split-album tag mismatches or inconsistent album covers detected.
+            </p>
+            <button
+              type="button"
+              onClick={onToggleOnlyMismatches}
+              className="m4-btn-secondary mt-4"
+            >
+              Show All Albums ({allAlbums.length})
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+            {visibleAlbums.map(({ artist, album }) => {
+              const splitCount = album.navidrome_warnings.filter(
+                (w) => w.severity === "split"
+              ).length;
+              const multiCovers = album.artwork_variants.length > 1;
+              return (
+                <button
+                  key={album.id}
+                  type="button"
+                  onClick={() => onSelectAlbum(artist, album)}
+                  className="group relative flex flex-col rounded-xl border border-border-subtle bg-surface p-3 text-left transition-colors hover:border-border-strong hover:bg-surface-elevated cursor-pointer"
+                >
+                  <div className="relative aspect-square w-full overflow-hidden rounded-lg">
+                    <AlbumCover
+                      coverPath={album.cover_track_path}
+                      alt={`${album.title} cover`}
+                      revision={artworkRevision}
+                      sizeClass="h-full w-full transition-transform duration-200 group-hover:scale-[1.02]"
+                    />
+                    {(splitCount > 0 || multiCovers) && (
+                      <div
+                        className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-border-strong bg-canvas/90 px-1.5 py-0.5 text-[10px] font-medium text-warn backdrop-blur-xs"
+                        title={
+                          splitCount > 0
+                            ? `${splitCount} Navidrome split-album tag mismatch(es)`
+                            : `${album.artwork_variants.length} distinct cover images`
+                        }
+                      >
+                        {splitCount > 0 ? (
+                          <AlertTriangle className="h-3 w-3" />
+                        ) : (
+                          <Images className="h-3 w-3" />
+                        )}
+                        {splitCount > 0 ? splitCount : album.artwork_variants.length}
+                      </div>
+                    )}
                   </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
+                  <div className="mt-3 min-w-0">
+                    <p className="truncate text-xs font-semibold text-ink-primary group-hover:text-accent transition-colors">
+                      {album.title}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-ink-secondary">
+                      {album.artist}
+                    </p>
+                    <div className="mt-2 flex items-center justify-between gap-1 text-[10px] font-mono text-ink-muted">
+                      <span>
+                        {album.year ? album.year.slice(0, 4) : "—"} · {album.track_count}t
+                      </span>
+                      <span className="rounded border border-border-subtle bg-canvas px-1.5 py-0.5 text-[10px] uppercase text-ink-secondary">
+                        {album.formats.join("/")}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </main>
     );
   }

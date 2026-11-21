@@ -64,6 +64,7 @@ export function App() {
   const [selectedTrackPath, setSelectedTrackPath] = useState<string | null>(null);
   const [liveTrack, setLiveTrack] = useState<TrackMetadata | null>(null);
   const [isBulkMode, setIsBulkMode] = useState(false);
+  const [onlyMismatches, setOnlyMismatches] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -501,6 +502,7 @@ export function App() {
           selectedAlbum={selectedAlbum}
           selectedTrackPath={selectedTrackPath}
           isBulkEditingAlbum={isBulkMode}
+          onlyMismatches={onlyMismatches}
           artworkRevision={artworkRevision}
           loading={loading}
           musicDir={health?.music_dir ?? "/music"}
@@ -509,6 +511,7 @@ export function App() {
           onSelectTrack={handleSelectTrack}
           onStartBulkEdit={handleStartBulkEdit}
           onIdentifyAlbum={handleIdentifyAlbum}
+          onToggleOnlyMismatches={() => setOnlyMismatches((v) => !v)}
           onRescan={handleRescan}
         />
 
