@@ -98,7 +98,8 @@ Modern-Music-Metadata-Manager/
 | `PUT` | `/api/track/artwork` | Embed or replace cover art on one or more tracks |
 | `POST` | `/api/track/artwork/copy` | Copy an existing album track's embedded cover art onto target tracks |
 | `DELETE` | `/api/track/artwork?path=` | Remove embedded cover art from a track |
-| `GET` | `/api/history` | Inspect recent metadata edit audit history stored in `/config/m4.db` |
+| `GET` | `/api/history` | Inspect recent metadata edit and file move audit history stored in `/config/m4.db` |
+| `POST` | `/api/history/{id}/undo` | Revert a previous tag edit or file (+ sidecar) move on disk |
 | `POST` | `/api/navidrome/scan` | Manually trigger a Navidrome Subsonic `startScan` |
 | `GET` | `/api/musicbrainz/search` | Search MusicBrainz releases by album & artist |
 | `GET` | `/api/musicbrainz/search/track` | Search MusicBrainz recordings to identify a single untagged track |

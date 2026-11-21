@@ -222,14 +222,28 @@ class LibraryResponse(BaseModel):
 
 
 class AuditEntry(BaseModel):
-    """Recorded metadata modification entry stored in /config/m4.db."""
+    """Recorded metadata modification or file move entry stored in /config/m4.db."""
 
     id: int
     timestamp: str
     path: str
     action: str
-    before_tags: dict[str, str | None]
-    after_tags: dict[str, str | None]
+    before_tags: dict[str, str | list[dict[str, str]] | None]
+    after_tags: dict[str, str | list[dict[str, str]] | None]
+    undone: bool = False
+    can_undo: bool = False
+    changed_fields: list[str] = Field(default_factory=list)
+
+
+class UndoResponse(BaseModel):
+    """Result of undoing a previous metadata edit or file move."""
+
+    entry_id: int
+    action: str
+    restored_path: str
+    restored_sidecars: int = 0
+    track: TrackMetadata | None = None
+    navidrome_sync: NavidromeSyncResult
 
 
 class MusicBrainzReleaseCandidate(BaseModel):
@@ -346,6 +360,7 @@ class OrganizeSettings(BaseModel):
     compilation_folder: str = "Various Artists"
     cleanup_empty_dirs: bool = True
     skip_missing_metadata: bool = True
+    move_sidecars: bool = True
 
 
 class MovePlanItem(BaseModel):
@@ -360,6 +375,13 @@ class MovePlanItem(BaseModel):
     reason: str | None = None
 
 
+class OrganizeMoveResult(BaseModel):
+    """Planned or completed file move record."""
+
+    source_path: str
+    target_path: str
+
+
 class OrganizePreviewRequest(BaseModel):
     """Optional filter and unsaved settings override for dry-run reorganization preview."""
 
@@ -368,7 +390,7 @@ class OrganizePreviewRequest(BaseModel):
 
 
 class OrganizePreviewResponse(BaseModel):
-    """Dry-run summary and list of planned file moves."""
+    """Dry-run summary and list of planned audio & sidecar file moves."""
 
     settings: OrganizeSettings
     total_tracks: int
@@ -376,7 +398,9 @@ class OrganizePreviewResponse(BaseModel):
     unchanged_count: int
     skipped_count: int
     conflict_count: int
+    sidecar_moves_count: int = 0
     items: list[MovePlanItem] = Field(default_factory=list)
+    sidecars: list[OrganizeMoveResult] = Field(default_factory=list)
 
 
 class OrganizeApplyRequest(BaseModel):
@@ -387,17 +411,11 @@ class OrganizeApplyRequest(BaseModel):
     trigger_navidrome_scan: bool = True
 
 
-class OrganizeMoveResult(BaseModel):
-    """Completed file move record."""
-
-    source_path: str
-    target_path: str
-
-
 class OrganizeApplyResponse(BaseModel):
     """Outcome of executing library reorganization."""
 
     moved: list[OrganizeMoveResult] = Field(default_factory=list)
+    moved_sidecars: list[OrganizeMoveResult] = Field(default_factory=list)
     skipped: int = 0
     errors: list[BulkUpdateError] = Field(default_factory=list)
     removed_empty_dirs: int = 0

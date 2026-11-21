@@ -603,5 +603,79 @@ def test_library_folder_organization_preview_and_apply(client: TestClient) -> No
     assert any(entry["action"] == "move_track" for entry in history)
 
 
+def test_history_undo_tags_and_sidecar_moves(client: TestClient) -> None:
+    music_dir = client.app.state.settings.music_dir
+    rel_mp3 = "Boards of Canada/Geogaddi/01 - Intro.mp3"
+
+    # 1. Edit a tag, then undo it via /api/history/{id}/undo
+    edit_res = client.put(
+        "/api/track",
+        json={"path": rel_mp3, "title": "Temporary Title", "genre": "Ambient"},
+    )
+    assert edit_res.status_code == 200
+
+    history = client.get("/api/history").json()
+    edit_entry = history[0]
+    assert edit_entry["can_undo"] is True
+    assert set(edit_entry["changed_fields"]) == {"title", "genre"}
+
+    undo_res = client.post(f"/api/history/{edit_entry['id']}/undo")
+    assert undo_res.status_code == 200
+    assert undo_res.json()["track"]["title"] == "Intro"
+    assert undo_res.json()["track"]["genre"] is None
+
+    # Double-undo is rejected cleanly
+    assert client.post(f"/api/history/{edit_entry['id']}/undo").status_code == 409
+
+    # 2. Add track-level (.lrc) and album-level (cover.jpg) sidecars and reorganize
+    album_dir = music_dir / "Boards of Canada" / "Geogaddi"
+    lrc_file = album_dir / "01 - Intro.lrc"
+    cover_file = album_dir / "cover.jpg"
+    lrc_file.write_text("[00:01.00] Intro lyrics\n", encoding="utf-8")
+    cover_file.write_bytes(TINY_PNG)
+
+    org_settings = {
+        "enabled": True,
+        "template": "album_only",
+        "rename_files": True,
+        "compilation_folder": "Various Artists",
+        "cleanup_empty_dirs": True,
+        "skip_missing_metadata": True,
+        "move_sidecars": True,
+    }
+    client.put("/api/settings/organize", json=org_settings)
+
+    preview = client.post("/api/organize/preview", json={}).json()
+    assert preview["moves_count"] == 2
+    assert preview["sidecar_moves_count"] == 2
+    sc_targets = {s["target_path"] for s in preview["sidecars"]}
+    assert sc_targets == {"Geogaddi/01 - Intro.lrc", "Geogaddi/cover.jpg"}
+
+    apply_res = client.post("/api/organize/apply", json={}).json()
+    assert len(apply_res["moved"]) == 2
+    assert len(apply_res["moved_sidecars"]) == 2
+    assert (music_dir / "Geogaddi" / "01 - Intro.lrc").is_file()
+    assert (music_dir / "Geogaddi" / "cover.jpg").is_file()
+    assert not (music_dir / "Boards of Canada").exists()
+
+    # 3. Undo both move_track history entries and verify audio + sidecars return to original folder
+    move_entries = [
+        e for e in client.get("/api/history").json() if e["action"] == "move_track"
+    ]
+    assert len(move_entries) == 2
+    restored_sidecars = 0
+    for move_entry in move_entries:
+        res = client.post(f"/api/history/{move_entry['id']}/undo")
+        assert res.status_code == 200
+        restored_sidecars += res.json()["restored_sidecars"]
+
+    assert restored_sidecars == 2
+    assert (music_dir / "Boards of Canada" / "Geogaddi" / "01 - Intro.mp3").is_file()
+    assert (music_dir / "Boards of Canada" / "Geogaddi" / "01 - Intro.lrc").is_file()
+    assert (music_dir / "Boards of Canada" / "Geogaddi" / "cover.jpg").is_file()
+    assert not (music_dir / "Geogaddi").exists()
+
+
+
 
 

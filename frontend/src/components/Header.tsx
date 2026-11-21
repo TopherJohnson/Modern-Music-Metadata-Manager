@@ -3,6 +3,7 @@ import {
   Disc3,
   FolderTree,
   HardDrive,
+  History,
   Radio,
   RefreshCw,
   Search,
@@ -18,6 +19,7 @@ interface HeaderProps {
   onNavidromeSync: () => void;
   syncingNavidrome: boolean;
   onOpenOrganize: () => void;
+  onOpenHistory: () => void;
   structureDriftCount: number;
   health: HealthResponse | null;
   trackCount: number;
@@ -31,6 +33,7 @@ export function Header({
   onNavidromeSync,
   syncingNavidrome,
   onOpenOrganize,
+  onOpenHistory,
   structureDriftCount,
   health,
   trackCount,
@@ -146,6 +149,17 @@ export function Header({
               {structureDriftCount}
             </span>
           )}
+        </button>
+
+        <button
+          id="open-history-btn"
+          type="button"
+          onClick={onOpenHistory}
+          className="m4-btn-secondary h-8 px-2.5 text-xs"
+          title="View activity history and undo recent edits or moves"
+        >
+          <History className="h-3.5 w-3.5 text-ink-secondary" />
+          <span className="hidden xl:inline">History</span>
         </button>
 
         <button

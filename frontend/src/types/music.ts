@@ -239,6 +239,7 @@ export interface OrganizeSettings {
   compilation_folder: string;
   cleanup_empty_dirs: boolean;
   skip_missing_metadata: boolean;
+  move_sidecars: boolean;
 }
 
 export interface MovePlanItem {
@@ -250,6 +251,11 @@ export interface MovePlanItem {
   reason: string | null;
 }
 
+export interface OrganizeMoveResult {
+  source_path: string;
+  target_path: string;
+}
+
 export interface OrganizePreviewResponse {
   settings: OrganizeSettings;
   total_tracks: number;
@@ -257,18 +263,37 @@ export interface OrganizePreviewResponse {
   unchanged_count: number;
   skipped_count: number;
   conflict_count: number;
+  sidecar_moves_count: number;
   items: MovePlanItem[];
-}
-
-export interface OrganizeMoveResult {
-  source_path: string;
-  target_path: string;
+  sidecars: OrganizeMoveResult[];
 }
 
 export interface OrganizeApplyResponse {
   moved: OrganizeMoveResult[];
+  moved_sidecars: OrganizeMoveResult[];
   skipped: number;
   errors: BulkUpdateError[];
   removed_empty_dirs: number;
+  navidrome_sync: NavidromeSyncResult;
+}
+
+export interface AuditEntry {
+  id: number;
+  timestamp: string;
+  path: string;
+  action: string;
+  before_tags: Record<string, string | Array<{ source: string; target: string }> | null>;
+  after_tags: Record<string, string | Array<{ source: string; target: string }> | null>;
+  undone: boolean;
+  can_undo: boolean;
+  changed_fields: string[];
+}
+
+export interface UndoResponse {
+  entry_id: number;
+  action: string;
+  restored_path: string;
+  restored_sidecars: number;
+  track: TrackMetadata | null;
   navidrome_sync: NavidromeSyncResult;
 }

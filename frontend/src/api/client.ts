@@ -1,4 +1,5 @@
 import type {
+  AuditEntry,
   BulkUpdatePayload,
   BulkUpdateResponse,
   HealthResponse,
@@ -17,6 +18,7 @@ import type {
   TrackMetadata,
   TrackUpdatePayload,
   TrackUpdateResponse,
+  UndoResponse,
 } from "../types/music";
 
 class ApiError extends Error {
@@ -223,6 +225,16 @@ export function applyOrganize(
       paths: paths ?? null,
       trigger_navidrome_scan: true,
     }),
+  });
+}
+
+export function getHistory(limit = 100): Promise<AuditEntry[]> {
+  return requestJson<AuditEntry[]>(`/api/history?limit=${limit}`);
+}
+
+export function undoHistoryEntry(entryId: number): Promise<UndoResponse> {
+  return requestJson<UndoResponse>(`/api/history/${entryId}/undo`, {
+    method: "POST",
   });
 }
 

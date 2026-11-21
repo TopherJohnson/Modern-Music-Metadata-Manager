@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS audit_history (
     path TEXT NOT NULL,
     action TEXT NOT NULL,
     before_json TEXT NOT NULL,
-    after_json TEXT NOT NULL
+    after_json TEXT NOT NULL,
+    undone INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_history_timestamp
@@ -70,6 +71,11 @@ _TRACK_CACHE_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("musicbrainz_album_id", "TEXT"),
     ("musicbrainz_album_artist_id", "TEXT"),
 )
+
+_UNDOABLE_TAG_ACTIONS: frozenset[str] = frozenset(
+    {"update_track", "bulk_update", "musicbrainz_apply", "musicbrainz_apply_track"}
+)
+_UNDOABLE_ACTIONS: frozenset[str] = _UNDOABLE_TAG_ACTIONS | {"move_track"}
 
 
 class Database:
@@ -98,6 +104,15 @@ class Database:
             if migrated:
                 # Clear stale cache rows once so the next scan populates the new metadata fields.
                 conn.execute("DELETE FROM track_cache")
+
+            audit_cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(audit_history)").fetchall()
+            }
+            if "undone" not in audit_cols:
+                conn.execute(
+                    "ALTER TABLE audit_history ADD COLUMN undone INTEGER NOT NULL DEFAULT 0"
+                )
         self._initialized = True
 
     @contextmanager
@@ -239,24 +254,72 @@ class Database:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, timestamp, path, action, before_json, after_json
+                SELECT id, timestamp, path, action, before_json, after_json, undone
                 FROM audit_history
                 ORDER BY id DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-        return [
-            AuditEntry(
-                id=row["id"],
-                timestamp=row["timestamp"],
-                path=row["path"],
-                action=row["action"],
-                before_tags=json.loads(row["before_json"]),
-                after_tags=json.loads(row["after_json"]),
+        return [self._row_to_audit(row) for row in rows]
+
+    def get_audit_entry(self, entry_id: int) -> AuditEntry | None:
+        """Fetch a single audit history entry by ID."""
+        if not self.db_path.exists():
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, timestamp, path, action, before_json, after_json, undone
+                FROM audit_history
+                WHERE id = ?
+                """,
+                (entry_id,),
+            ).fetchone()
+        return self._row_to_audit(row) if row else None
+
+    def mark_audit_undone(self, entry_id: int) -> None:
+        """Mark an audit history entry as already undone."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE audit_history SET undone = 1 WHERE id = ?",
+                (entry_id,),
             )
-            for row in rows
-        ]
+
+    @staticmethod
+    def _row_to_audit(row: sqlite3.Row) -> AuditEntry:
+        before = json.loads(row["before_json"])
+        after = json.loads(row["after_json"])
+        undone = bool(row["undone"])
+        action = str(row["action"])
+
+        changed_fields: list[str] = []
+        for key in sorted(set(before.keys()) | set(after.keys())):
+            if key == "sidecars":
+                continue
+            if before.get(key) != after.get(key):
+                changed_fields.append(key)
+
+        can_undo = (
+            not undone
+            and action in _UNDOABLE_ACTIONS
+            and (
+                (action == "move_track" and bool(before.get("path")) and bool(after.get("path")))
+                or (action in _UNDOABLE_TAG_ACTIONS and bool(changed_fields))
+            )
+        )
+
+        return AuditEntry(
+            id=row["id"],
+            timestamp=row["timestamp"],
+            path=row["path"],
+            action=action,
+            before_tags=before,
+            after_tags=after,
+            undone=undone,
+            can_undo=can_undo,
+            changed_fields=changed_fields,
+        )
 
     def get_organize_settings(self) -> OrganizeSettings:
         """Load persisted library folder organization preferences from app_settings."""

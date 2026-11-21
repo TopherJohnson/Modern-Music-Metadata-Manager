@@ -90,7 +90,7 @@ async def post_organize_apply(
         )
 
     tracks = scan_library(app_settings.music_dir, db)
-    moved, skipped, errors, removed_empty_dirs = apply_organize_plan(
+    moved, moved_sidecars, skipped, errors, removed_empty_dirs = apply_organize_plan(
         app_settings.music_dir,
         db,
         tracks,
@@ -103,6 +103,7 @@ async def post_organize_apply(
 
     return OrganizeApplyResponse(
         moved=moved,
+        moved_sidecars=moved_sidecars,
         skipped=skipped,
         errors=errors,
         removed_empty_dirs=removed_empty_dirs,

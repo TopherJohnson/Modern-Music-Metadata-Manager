@@ -91,7 +91,8 @@ export function OrganizeModal({
     draft.rename_files !== savedSettings.rename_files ||
     draft.compilation_folder !== savedSettings.compilation_folder ||
     draft.cleanup_empty_dirs !== savedSettings.cleanup_empty_dirs ||
-    draft.skip_missing_metadata !== savedSettings.skip_missing_metadata;
+    draft.skip_missing_metadata !== savedSettings.skip_missing_metadata ||
+    draft.move_sidecars !== savedSettings.move_sidecars;
 
   useEffect(() => {
     if (open) {
@@ -312,7 +313,7 @@ export function OrganizeModal({
           </div>
 
           {/* Options Row */}
-          <div className="grid grid-cols-1 gap-2.5 rounded-xl border border-border-subtle bg-canvas/40 p-3.5 sm:grid-cols-3 text-xs">
+          <div className="grid grid-cols-1 gap-2.5 rounded-xl border border-border-subtle bg-canvas/40 p-3.5 sm:grid-cols-2 text-xs">
             <label className="inline-flex items-start gap-2 text-ink-primary cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -326,6 +327,23 @@ export function OrganizeModal({
                 <span className="font-medium">Standardize filenames</span>
                 <span className="block text-[10px] text-ink-muted">
                   Rename to 01 - Track Title.ext
+                </span>
+              </span>
+            </label>
+
+            <label className="inline-flex items-start gap-2 text-ink-primary cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={draft.move_sidecars}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, move_sidecars: e.target.checked }))
+                }
+                className="mt-0.5 h-3.5 w-3.5 accent-amber-500"
+              />
+              <span>
+                <span className="font-medium">Move sidecar files</span>
+                <span className="block text-[10px] text-ink-muted">
+                  Bring .lrc lyrics, cover.jpg, .cue &amp; .log files along
                 </span>
               </span>
             </label>
@@ -392,6 +410,12 @@ export function OrganizeModal({
                   <span className="rounded-md bg-accent-soft px-2 py-0.5 text-accent">
                     {preview.moves_count} to move
                   </span>
+                  {preview.sidecar_moves_count > 0 && (
+                    <span className="rounded-md bg-surface-elevated px-2 py-0.5 text-ink-primary">
+                      +{preview.sidecar_moves_count} sidecar
+                      {preview.sidecar_moves_count === 1 ? "" : "s"}
+                    </span>
+                  )}
                   <span className="rounded-md bg-surface-elevated px-2 py-0.5 text-ok">
                     {preview.unchanged_count} organized
                   </span>
@@ -452,6 +476,24 @@ export function OrganizeModal({
                     </label>
                   );
                 })}
+
+                {(preview?.sidecars ?? []).map((sc) => (
+                  <div
+                    key={`sidecar-${sc.source_path}`}
+                    className="flex items-start gap-2.5 bg-surface/40 px-3 py-2 text-[11px]"
+                  >
+                    <span className="mt-0.5 shrink-0 rounded bg-surface-elevated px-1.5 py-0.5 font-mono text-[9px] uppercase text-ink-muted">
+                      sidecar
+                    </span>
+                    <div className="min-w-0 flex-1 font-mono leading-relaxed">
+                      <p className="break-all text-ink-muted">{sc.source_path}</p>
+                      <p className="flex items-start gap-1 break-all text-ink-secondary">
+                        <ArrowRight className="mt-1 h-3 w-3 shrink-0 text-ink-muted" />
+                        <span>{sc.target_path}</span>
+                      </p>
+                    </div>
+                  </div>
+                ))}
 
                 {conflictItems.map((item) => (
                   <div

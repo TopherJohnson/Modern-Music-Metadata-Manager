@@ -12,11 +12,13 @@ import {
   saveOrganizeSettings,
   triggerLibraryScan,
   triggerNavidromeScan,
+  undoHistoryEntry,
   updateTrack,
   updateTracksBulk,
   uploadArtwork,
 } from "./api/client";
 import { Header } from "./components/Header";
+import { HistoryDrawer } from "./components/HistoryDrawer";
 import { MetadataEditor } from "./components/MetadataEditor";
 import {
   MusicBrainzModal,
@@ -30,6 +32,7 @@ import { TrackList, type AlbumFilterMode } from "./components/TrackList";
 import type {
   AlbumGroup,
   ArtistGroup,
+  AuditEntry,
   HealthResponse,
   LibraryResponse,
   MusicBrainzApplyPayload,
@@ -47,6 +50,7 @@ const DEFAULT_ORGANIZE_SETTINGS: OrganizeSettings = {
   compilation_folder: "Various Artists",
   cleanup_empty_dirs: true,
   skip_missing_metadata: true,
+  move_sidecars: true,
 };
 
 function findAlbumAndTrackByPath(
@@ -121,6 +125,8 @@ export function App() {
     scopeLabel: null,
     scopePaths: null,
   });
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [undoingId, setUndoingId] = useState<number | null>(null);
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -634,6 +640,11 @@ export function App() {
       setOrganizeModal({ open: false, scopeLabel: null, scopePaths: null });
 
       const notes = [
+        response.moved_sidecars.length > 0
+          ? `Moved ${response.moved_sidecars.length} sidecar ${
+              response.moved_sidecars.length === 1 ? "file" : "files"
+            }.`
+          : null,
         response.removed_empty_dirs > 0
           ? `Removed ${response.removed_empty_dirs} empty ${
               response.removed_empty_dirs === 1 ? "folder" : "folders"
@@ -668,6 +679,55 @@ export function App() {
     }
   };
 
+  const handleUndoHistory = async (entry: AuditEntry) => {
+    setUndoingId(entry.id);
+    try {
+      const res = await undoHistoryEntry(entry.id);
+      if (res.track) {
+        if (
+          selectedTrackPath === entry.path ||
+          selectedTrackPath === res.restored_path
+        ) {
+          setSelectedTrackPath(res.track.path);
+          setLiveTrack(res.track);
+        }
+      }
+      const updatedLib = await fetchLibrary(debouncedQuery, { silent: true });
+      if (updatedLib && res.track) {
+        const relocated = findAlbumAndTrackByPath(
+          updatedLib.artists,
+          res.track.path
+        );
+        if (relocated && selectedAlbumId) {
+          setSelectedAlbumId(relocated.album.id);
+        }
+      }
+      const details = [
+        res.restored_sidecars > 0
+          ? `Restored ${res.restored_sidecars} sidecar ${
+              res.restored_sidecars === 1 ? "file" : "files"
+            }.`
+          : null,
+        formatNavidromeNote(res.navidrome_sync),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      showToast(
+        "success",
+        entry.action === "move_track"
+          ? "Restored file location"
+          : "Reverted tag changes",
+        details || res.restored_path
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Undo failed";
+      showToast("error", "Could not undo change", msg);
+    } finally {
+      setUndoingId(null);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col bg-canvas text-ink-primary">
       <Header
@@ -678,6 +738,7 @@ export function App() {
         onNavidromeSync={handleNavidromeSync}
         syncingNavidrome={syncingNavidrome}
         onOpenOrganize={handleOpenOrganizeLibrary}
+        onOpenHistory={() => setHistoryOpen(true)}
         structureDriftCount={structureDriftCount}
         health={health}
         trackCount={library?.stats.track_count ?? health?.cached_tracks ?? 0}
@@ -761,6 +822,13 @@ export function App() {
         }
         onSaveSettings={handleSaveOrganizeSettings}
         onApplyMoves={handleApplyOrganize}
+      />
+
+      <HistoryDrawer
+        open={historyOpen}
+        undoingId={undoingId}
+        onClose={() => setHistoryOpen(false)}
+        onUndo={handleUndoHistory}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
