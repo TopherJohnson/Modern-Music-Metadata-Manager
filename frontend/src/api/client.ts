@@ -23,12 +23,21 @@ import type {
   OrganizePreviewResponse,
   OrganizeSettings,
   RawTagsResponse,
+  SlskdDownloadsResponse,
+  SlskdQueueDownloadResponse,
+  SlskdSearchResponse,
+  SlskdStatusResponse,
+  StagingImportApplyResponse,
+  StagingImportPreviewResponse,
+  StagingStatusResponse,
   TrackDeleteResponse,
   TrackMetadata,
   TrackUpdatePayload,
   TrackUpdateResponse,
   UndoResponse,
 } from "../types/music";
+
+export const STAGING_LIBRARY_ID = "__staging__";
 
 class ApiError extends Error {
   status: number;
@@ -413,6 +422,104 @@ export function searchLibraryForMissingTrack(params: {
   }
   return requestJson<LibrarySearchMissingResponse>(
     `/api/albums/completeness/search-library?${qs.toString()}`
+  );
+}
+
+export function getStagingStatus(rescan = false): Promise<StagingStatusResponse> {
+  const qs = rescan ? "?rescan=true" : "";
+  return requestJson<StagingStatusResponse>(`/api/staging/status${qs}`);
+}
+
+export function previewStagingImport(params: {
+  targetLibraryId?: string | null;
+  paths?: string[] | null;
+}): Promise<StagingImportPreviewResponse> {
+  return requestJson<StagingImportPreviewResponse>("/api/staging/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      target_library_id: params.targetLibraryId ?? null,
+      paths: params.paths ?? null,
+    }),
+  });
+}
+
+export function applyStagingImport(params: {
+  targetLibraryId?: string | null;
+  paths?: string[] | null;
+  triggerNavidromeScan?: boolean;
+}): Promise<StagingImportApplyResponse> {
+  return requestJson<StagingImportApplyResponse>("/api/staging/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      target_library_id: params.targetLibraryId ?? null,
+      paths: params.paths ?? null,
+      trigger_navidrome_scan: params.triggerNavidromeScan ?? true,
+    }),
+  });
+}
+
+export function getSlskdStatus(): Promise<SlskdStatusResponse> {
+  return requestJson<SlskdStatusResponse>("/api/slskd/status");
+}
+
+export function searchSlskd(payload: {
+  query: string;
+  trackTitle?: string | null;
+  artist?: string | null;
+  preferredFormats?: string[];
+  expectedLengthMs?: number | null;
+  timeoutSec?: number;
+}): Promise<SlskdSearchResponse> {
+  return requestJson<SlskdSearchResponse>("/api/slskd/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: payload.query,
+      track_title: payload.trackTitle ?? null,
+      artist: payload.artist ?? null,
+      preferred_formats: payload.preferredFormats ?? [],
+      expected_length_ms: payload.expectedLengthMs ?? null,
+      timeout_sec: payload.timeoutSec ?? 5.0,
+    }),
+  });
+}
+
+export function refreshSlskdSearch(searchId: string): Promise<SlskdSearchResponse> {
+  return requestJson<SlskdSearchResponse>(
+    `/api/slskd/search/${encodeURIComponent(searchId)}`
+  );
+}
+
+export function queueSlskdDownload(
+  username: string,
+  files: Array<{ filename: string; size: number }>
+): Promise<SlskdQueueDownloadResponse> {
+  return requestJson<SlskdQueueDownloadResponse>("/api/slskd/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, files }),
+  });
+}
+
+export function getSlskdDownloads(): Promise<SlskdDownloadsResponse> {
+  return requestJson<SlskdDownloadsResponse>("/api/slskd/downloads");
+}
+
+export function clearCompletedSlskdDownloads(): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>("/api/slskd/downloads/completed", {
+    method: "DELETE",
+  });
+}
+
+export function removeSlskdDownload(
+  username: string,
+  transferId: string
+): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>(
+    `/api/slskd/downloads/${encodeURIComponent(username)}/${encodeURIComponent(transferId)}`,
+    { method: "DELETE" }
   );
 }
 

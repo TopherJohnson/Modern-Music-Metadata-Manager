@@ -107,7 +107,11 @@ async def post_organize_apply(
         library_id=lib.id,
     )
 
-    should_scan = (payload.trigger_navidrome_scan if payload else True) and bool(moved)
+    should_scan = (
+        (payload.trigger_navidrome_scan if payload else True)
+        and bool(moved)
+        and not lib.is_staging
+    )
     navidrome_sync = await trigger_navidrome_scan(app_settings, requested=should_scan)
 
     return OrganizeApplyResponse(

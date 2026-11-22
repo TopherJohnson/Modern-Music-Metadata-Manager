@@ -51,6 +51,12 @@ const ACTION_META: Record<
     batchLabel: "Batch File Move",
     kind: "move",
   },
+  import_from_staging: {
+    label: "Import from Staging",
+    batchLabel: "Batch Staging Import",
+    kind: "move",
+  },
+  undo_import: { label: "Returned to Staging", kind: "move" },
   delete_track: { label: "File Deleted", kind: "delete" },
   update_artwork: {
     label: "Cover Upload",
@@ -243,7 +249,11 @@ export function HistoryDrawer({
   }
 
   function renderEntryBody(entry: AuditEntry, compact = false) {
-    const isMove = entry.action === "move_track" || entry.action === "undo_move";
+    const isMove =
+      entry.action === "move_track" ||
+      entry.action === "undo_move" ||
+      entry.action === "import_from_staging" ||
+      entry.action === "undo_import";
     const sidecars = Array.isArray(entry.after_tags.sidecars)
       ? entry.after_tags.sidecars
       : [];
@@ -394,7 +404,10 @@ export function HistoryDrawer({
                 const expanded = !!expandedBatches[item.batchId];
                 const isUndoingBatch = undoingBatchId === item.batchId;
                 const isMoveBatch =
-                  item.action === "move_track" || item.action === "undo_move";
+                  item.action === "move_track" ||
+                  item.action === "undo_move" ||
+                  item.action === "import_from_staging" ||
+                  item.action === "undo_import";
 
                 return (
                   <div

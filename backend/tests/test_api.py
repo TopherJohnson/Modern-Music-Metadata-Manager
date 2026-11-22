@@ -1713,3 +1713,339 @@ def test_completeness_musicbrainz_cache_stray_search_and_ignores(
     assert albums_restored[song_review["id"]]["missing_track_count"] == 1
     assert albums_restored[talking_book["id"]]["missing_tracks_ignored"] is False
     assert albums_restored[talking_book["id"]]["missing_track_count"] == 3
+
+
+def test_staging_inbox_preview_drop_in_import_navidrome_guard_and_batch_undo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #8: standalone Staging works without slskd, suppresses Navidrome on edits, detects drop-in albums, moves sidecars, and supports batch undo."""
+    from app.models import NavidromeSyncResult
+    from app.routers import staging as staging_router
+    from app.routers import tracks as tracks_router
+    from app.services.tags import write_track_metadata
+
+    music_dir = tmp_path / "music"
+    staging_dir = tmp_path / "downloads"
+    config_dir = tmp_path / "config"
+    music_dir.mkdir()
+    staging_dir.mkdir()
+    config_dir.mkdir()
+
+    # Existing album in library using a custom folder name
+    existing_path = "Boards of Canada/Geogaddi (2002 Original)/01 - Intro.mp3"
+    _create_minimal_mp3(music_dir / existing_path)
+    write_track_metadata(
+        music_dir,
+        existing_path,
+        {
+            "title": "Intro",
+            "artist": "Boards of Canada",
+            "album_artist": "Boards of Canada",
+            "album": "Geogaddi",
+            "year": "2002",
+            "track_number": "1/3",
+        },
+    )
+
+    # Staged files: 1 single missing track matching Geogaddi (should drop-in!) + 1 new album with .lrc sidecar
+    staged_dropin = "slskd-user/03 - Beware.flac"
+    staged_new = "incoming/01 - Alpha.mp3"
+    _create_minimal_flac(staging_dir / staged_dropin)
+    _create_minimal_mp3(staging_dir / staged_new)
+    (staging_dir / "incoming" / "01 - Alpha.lrc").write_text("[00:01.00] Alpha\n", encoding="utf-8")
+
+    write_track_metadata(
+        staging_dir,
+        staged_dropin,
+        {
+            "title": "Beware",
+            "artist": "Boards of Canada",
+            "album_artist": "Boards of Canada",
+            "album": "Geogaddi",
+            "track_number": "3/3",
+        },
+    )
+    write_track_metadata(
+        staging_dir,
+        staged_new,
+        {
+            "title": "Alpha",
+            "artist": "New Artist",
+            "album_artist": "New Artist",
+            "album": "New Album",
+            "track_number": "1/1",
+        },
+    )
+
+    navidrome_calls: list[bool] = []
+
+    async def fake_navidrome(_settings, *, requested: bool = True):
+        if requested:
+            navidrome_calls.append(True)
+            return NavidromeSyncResult(triggered=True, configured=True, ok=True)
+        return NavidromeSyncResult(triggered=False, configured=True, ok=False)
+
+    monkeypatch.setattr(tracks_router, "trigger_navidrome_scan", fake_navidrome)
+    monkeypatch.setattr(staging_router, "trigger_navidrome_scan", fake_navidrome)
+
+    settings = Settings(
+        music_dir=music_dir,
+        config_dir=config_dir,
+        static_dir=None,
+        navidrome_url="http://navidrome:4533",
+        navidrome_user="admin",
+        navidrome_pass="secret",
+        navidrome_auto_scan=True,
+        log_level="warning",
+        staging_dir=staging_dir,
+        slskd_url=None,
+        slskd_api_key=None,
+    )
+
+    with TestClient(create_app(settings=settings)) as tc:
+        # 1. Health reports Staging enabled & slskd disabled (completely independent!)
+        health = tc.get("/api/health").json()
+        assert health["staging_configured"] is True
+        assert health["staging_dir_writable"] is True
+        assert health["slskd_configured"] is False
+
+        # Real libraries list excludes __staging__
+        libs = tc.get("/api/libraries").json()
+        assert all(l["id"] != "__staging__" for l in libs)
+
+        # Staging status reports 2 staged tracks across 2 albums
+        st_status = tc.get("/api/staging/status", params={"rescan": True}).json()
+        assert st_status["configured"] is True
+        assert st_status["track_count"] == 2
+        assert st_status["album_count"] == 2
+
+        # 2. Editing a staged track does NOT trigger Navidrome rescan!
+        edit_res = tc.put(
+            "/api/track",
+            headers={"X-M4-Library": "__staging__"},
+            json={"path": staged_new, "genre": "Ambient"},
+        )
+        assert edit_res.status_code == 200
+        assert edit_res.json()["navidrome_sync"]["triggered"] is False
+        assert len(navidrome_calls) == 0
+
+        # 3. Preview detects single-track drop-in into the existing Geogaddi folder + standard template for New Album
+        prev_res = tc.post("/api/staging/preview", json={})
+        assert prev_res.status_code == 200
+        prev = prev_res.json()
+        assert prev["import_count"] == 2
+        assert prev["drop_in_count"] == 1
+        assert prev["sidecar_moves_count"] == 1
+
+        by_src = {i["source_path"]: i for i in prev["items"]}
+        assert by_src[staged_dropin]["drop_in"] is True
+        assert by_src[staged_dropin]["target_path"] == "Boards of Canada/Geogaddi (2002 Original)/03 - Beware.flac"
+        assert by_src[staged_new]["drop_in"] is False
+        assert by_src[staged_new]["target_path"] == "New Artist/New Album/01 - Alpha.mp3"
+
+        # 4. Import moves files + sidecars, cleans empty staging folders, and triggers ONE Navidrome scan
+        imp_res = tc.post("/api/staging/import", json={})
+        assert imp_res.status_code == 200
+        imp = imp_res.json()
+        assert len(imp["imported"]) == 2
+        assert len(imp["moved_sidecars"]) == 1
+        assert imp["errors"] == []
+        assert imp["batch_id"] is not None
+        assert imp["removed_empty_dirs"] >= 2
+        assert imp["navidrome_sync"]["triggered"] is True
+        assert len(navidrome_calls) == 1
+
+        assert (music_dir / "Boards of Canada/Geogaddi (2002 Original)/03 - Beware.flac").is_file()
+        assert (music_dir / "New Artist/New Album/01 - Alpha.mp3").is_file()
+        assert (music_dir / "New Artist/New Album/01 - Alpha.lrc").is_file()
+        assert not (staging_dir / staged_dropin).exists()
+        assert not (staging_dir / staged_new).exists()
+        assert tc.get("/api/staging/status").json()["track_count"] == 0
+        assert tc.get("/api/library").json()["stats"]["track_count"] == 3
+
+        # 5. Batch undo in History moves both tracks + sidecar cleanly back to Staging!
+        undo_res = tc.post(f"/api/history/batch/{imp['batch_id']}/undo")
+        assert undo_res.status_code == 200
+        undo_body = undo_res.json()
+        assert undo_body["undone_count"] == 2
+        assert undo_body["restored_sidecars"] == 1
+        assert undo_body["errors"] == []
+
+        assert (staging_dir / staged_dropin).is_file()
+        assert (staging_dir / staged_new).is_file()
+        assert (staging_dir / "incoming" / "01 - Alpha.lrc").is_file()
+        assert not (music_dir / "New Artist").exists()
+        assert tc.get("/api/library").json()["stats"]["track_count"] == 1
+        assert tc.get("/api/staging/status").json()["track_count"] == 2
+
+
+def test_slskd_ranking_search_queue_and_downloads_independent_of_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #6: slskd works independently without Staging, ranks candidates by format/duration/slot, and exposes search/queue/downloads endpoints."""
+    from app.models import (
+        SlskdDownloadsResponse,
+        SlskdQueueDownloadResponse,
+        SlskdSearchResponse,
+        SlskdTransferItem,
+    )
+    from app.routers import slskd as slskd_router
+    from app.services.slskd import rank_slskd_responses
+
+    # 1. Pure ranking engine test (format alignment, duration closeness, free slot, locked & non-audio filtering)
+    mock_responses = [
+        {
+            "username": "lossy_peer",
+            "hasFreeUploadSlot": False,
+            "uploadSpeed": 120000,
+            "queueLength": 15,
+            "files": [
+                {
+                    "filename": "Music\\Stevie\\03 - Isn't She Lovely (Live).mp3",
+                    "size": 4_000_000,
+                    "bitRate": 128,
+                    "length": 480,  # 86s off from expected 394s
+                    "isLocked": False,
+                },
+                {
+                    "filename": "Music\\Stevie\\cover.jpg",
+                    "size": 90_000,
+                    "isLocked": False,
+                },
+                {
+                    "filename": "Music\\Stevie\\03 - Isn't She Lovely.flac",
+                    "size": 45_000_000,
+                    "length": 394,
+                    "isLocked": True,  # locked -> must be skipped
+                },
+            ],
+        },
+        {
+            "username": "audiophile_peer",
+            "hasFreeUploadSlot": True,
+            "uploadSpeed": 2_500_000,
+            "queueLength": 0,
+            "files": [
+                {
+                    "filename": "FLAC\\Stevie Wonder\\Song Review\\03 - Isn't She Lovely.flac",
+                    "size": 42_000_000,
+                    "sampleRate": 44100,
+                    "bitDepth": 16,
+                    "length": 395,  # within 1s of expected 394s!
+                    "isLocked": False,
+                },
+            ],
+        },
+    ]
+
+    ranked, total_files = rank_slskd_responses(
+        mock_responses,
+        query="Stevie Wonder Isn't She Lovely",
+        track_title="Isn't She Lovely",
+        artist="Stevie Wonder",
+        preferred_formats=["FLAC"],
+        expected_length_ms=394_000,
+    )
+    assert total_files == 4
+    assert len(ranked) == 2  # cover.jpg and locked flac excluded
+    assert ranked[0].username == "audiophile_peer"
+    assert ranked[0].format == "FLAC"
+    assert ranked[0].has_free_upload_slot is True
+    assert ranked[0].duration_diff_sec == 1.0
+    assert ranked[0].score > ranked[1].score
+
+    # 2. Endpoint wiring when slskd is configured WITHOUT Staging
+    music_dir = tmp_path / "music"
+    config_dir = tmp_path / "config"
+    music_dir.mkdir()
+    config_dir.mkdir()
+
+    async def fake_search(_settings, payload):
+        return SlskdSearchResponse(
+            search_id="search-123",
+            query=payload.query,
+            state="Completed",
+            is_complete=True,
+            response_count=2,
+            file_count=4,
+            candidates=ranked,
+        )
+
+    async def fake_queue(_settings, username, files):
+        return SlskdQueueDownloadResponse(
+            ok=True, username=username, queued_count=len(files), detail="Queued"
+        )
+
+    async def fake_downloads(_settings):
+        return SlskdDownloadsResponse(
+            active_count=1,
+            completed_count=0,
+            failed_count=0,
+            transfers=[
+                SlskdTransferItem(
+                    id="tr-1",
+                    username="audiophile_peer",
+                    filename="FLAC\\Stevie Wonder\\03 - Isn't She Lovely.flac",
+                    basename="03 - Isn't She Lovely.flac",
+                    size=42_000_000,
+                    bytes_transferred=21_000_000,
+                    percent_complete=50.0,
+                    state="InProgress",
+                    average_speed=1_500_000.0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(slskd_router, "search_slskd", fake_search)
+    monkeypatch.setattr(slskd_router, "queue_slskd_downloads", fake_queue)
+    monkeypatch.setattr(slskd_router, "list_slskd_downloads", fake_downloads)
+
+    settings = Settings(
+        music_dir=music_dir,
+        config_dir=config_dir,
+        static_dir=None,
+        navidrome_url=None,
+        navidrome_user=None,
+        navidrome_pass=None,
+        navidrome_auto_scan=False,
+        log_level="warning",
+        staging_dir=None,
+        slskd_url="http://slskd:5030",
+        slskd_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings=settings)) as tc:
+        health = tc.get("/api/health").json()
+        assert health["slskd_configured"] is True
+        assert health["staging_configured"] is False
+
+        # Staging preview rejects cleanly when Staging isn't configured
+        assert tc.post("/api/staging/preview", json={}).status_code == 400
+
+        search_res = tc.post(
+            "/api/slskd/search",
+            json={
+                "query": "Stevie Wonder Isn't She Lovely",
+                "track_title": "Isn't She Lovely",
+                "preferred_formats": ["FLAC"],
+                "expected_length_ms": 394000,
+            },
+        )
+        assert search_res.status_code == 200
+        assert search_res.json()["candidates"][0]["username"] == "audiophile_peer"
+
+        q_res = tc.post(
+            "/api/slskd/download",
+            json={
+                "username": "audiophile_peer",
+                "files": [{"filename": ranked[0].filename, "size": ranked[0].size}],
+            },
+        )
+        assert q_res.status_code == 200
+        assert q_res.json()["queued_count"] == 1
+
+        dl_res = tc.get("/api/slskd/downloads")
+        assert dl_res.status_code == 200
+        assert dl_res.json()["active_count"] == 1
+        assert dl_res.json()["transfers"][0]["percent_complete"] == 50.0
+

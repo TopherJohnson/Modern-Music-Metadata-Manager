@@ -15,13 +15,17 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
+STAGING_LIBRARY_ID = "__staging__"
+
+
 @dataclass(frozen=True)
 class LibraryConfig:
-    """Single configured music library root directory."""
+    """Single configured music library (or staging inbox) root directory."""
 
     id: str
     name: str
     path: Path
+    is_staging: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,9 @@ class Settings:
     auth_user: str | None = None
     auth_pass: str | None = None
     session_secret: str | None = None
+    staging_dir: Path | None = None
+    slskd_url: str | None = None
+    slskd_api_key: str | None = None
 
     def __post_init__(self) -> None:
         if not self.libraries:
@@ -58,6 +65,25 @@ class Settings:
         return bool(self.navidrome_url and self.navidrome_user and self.navidrome_pass)
 
     @property
+    def staging_configured(self) -> bool:
+        return self.staging_dir is not None
+
+    @property
+    def staging_library(self) -> LibraryConfig | None:
+        if self.staging_dir is None:
+            return None
+        return LibraryConfig(
+            id=STAGING_LIBRARY_ID,
+            name="Staging",
+            path=self.staging_dir,
+            is_staging=True,
+        )
+
+    @property
+    def slskd_configured(self) -> bool:
+        return bool(self.slskd_url and self.slskd_api_key)
+
+    @property
     def auth_enabled(self) -> bool:
         return bool(self.auth_user and self.auth_pass)
 
@@ -69,6 +95,8 @@ class Settings:
         if not library_id:
             return self.libraries[0]
         target = library_id.strip().lower()
+        if target == STAGING_LIBRARY_ID:
+            return self.staging_library
         for lib in self.libraries:
             if lib.id == target:
                 return lib
@@ -154,6 +182,13 @@ def load_settings() -> Settings:
     auto_scan_raw = os.environ.get("NAVIDROME_AUTO_SCAN", "true").strip().lower()
     navidrome_auto_scan = auto_scan_raw not in {"0", "false", "no", "off"}
 
+    staging_raw = _clean_env("M4_STAGING_DIR") or _clean_env("M4_INBOX_DIR")
+    staging_dir = Path(staging_raw) if staging_raw else None
+
+    slskd_url = _clean_env("SLSKD_URL")
+    if slskd_url:
+        slskd_url = slskd_url.rstrip("/")
+
     return Settings(
         music_dir=libraries[0].path,
         config_dir=config_dir,
@@ -167,4 +202,7 @@ def load_settings() -> Settings:
         auth_user=_clean_env("M4_AUTH_USER"),
         auth_pass=_clean_env("M4_AUTH_PASS"),
         session_secret=_clean_env("M4_SESSION_SECRET"),
+        staging_dir=staging_dir,
+        slskd_url=slskd_url,
+        slskd_api_key=_clean_env("SLSKD_API_KEY"),
     )

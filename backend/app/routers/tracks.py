@@ -131,7 +131,8 @@ async def put_track(
         _raise_http_for_tag_error(exc)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=payload.trigger_navidrome_scan and bool(updates)
+        settings,
+        requested=payload.trigger_navidrome_scan and bool(updates) and not lib.is_staging,
     )
     return TrackUpdateResponse(track=after, navidrome_sync=navidrome_sync)
 
@@ -210,7 +211,7 @@ async def delete_track(
     )
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag
+        settings, requested=trigger_navidrome_scan_flag and not lib.is_staging
     )
     return TrackDeleteResponse(
         deleted_path=rel_path,
@@ -265,7 +266,7 @@ async def put_tracks_bulk(
 
     navidrome_sync = await trigger_navidrome_scan(
         settings,
-        requested=payload.trigger_navidrome_scan and bool(updated) and bool(updates),
+        requested=payload.trigger_navidrome_scan and bool(updated) and bool(updates) and not lib.is_staging,
     )
     return BulkUpdateResponse(
         updated=updated,
@@ -414,7 +415,7 @@ async def merge_albums(
 
     navidrome_sync = await trigger_navidrome_scan(
         settings,
-        requested=payload.trigger_navidrome_scan and (bool(updated) or bool(moved)),
+        requested=payload.trigger_navidrome_scan and (bool(updated) or bool(moved)) and not lib.is_staging,
     )
     return AlbumMergeResponse(
         updated=updated,
@@ -506,7 +507,7 @@ async def copy_track_artwork(
         db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=payload.trigger_navidrome_scan and bool(updated)
+        settings, requested=payload.trigger_navidrome_scan and bool(updated) and not lib.is_staging
     )
     return BulkUpdateResponse(
         updated=updated,
@@ -588,7 +589,7 @@ async def put_track_artwork(
         db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag and bool(updated)
+        settings, requested=trigger_navidrome_scan_flag and bool(updated) and not lib.is_staging
     )
     return BulkUpdateResponse(
         updated=updated,
@@ -622,6 +623,6 @@ async def remove_track_artwork(
         _raise_http_for_tag_error(exc)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag
+        settings, requested=trigger_navidrome_scan_flag and not lib.is_staging
     )
     return TrackUpdateResponse(track=after, navidrome_sync=navidrome_sync)

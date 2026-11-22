@@ -263,7 +263,8 @@ async def apply_musicbrainz_release(
         db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=payload.trigger_navidrome_scan and bool(updated)
+        settings,
+        requested=payload.trigger_navidrome_scan and bool(updated) and not lib.is_staging,
     )
     return MusicBrainzApplyResponse(
         updated=updated,
@@ -378,7 +379,7 @@ async def apply_musicbrainz_track(
 
     db.upsert_tracks([after], library_id=lib.id)
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=payload.trigger_navidrome_scan
+        settings, requested=payload.trigger_navidrome_scan and not lib.is_staging
     )
     return MusicBrainzApplyTrackResponse(
         track=after,

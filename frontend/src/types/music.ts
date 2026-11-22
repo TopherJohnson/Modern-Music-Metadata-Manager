@@ -174,6 +174,13 @@ export interface HealthResponse {
   cached_tracks: number;
   auth_enabled?: boolean;
   libraries_count?: number;
+  staging_configured?: boolean;
+  staging_dir?: string | null;
+  staging_dir_exists?: boolean;
+  staging_dir_readable?: boolean;
+  staging_dir_writable?: boolean;
+  staging_tracks?: number;
+  slskd_configured?: boolean;
 }
 
 export interface LibraryInfo {
@@ -457,3 +464,118 @@ export interface BatchUndoResponse {
   errors: BulkUpdateError[];
   navidrome_sync: NavidromeSyncResult;
 }
+
+export interface StagingStatusResponse {
+  configured: boolean;
+  path: string | null;
+  exists: boolean;
+  readable: boolean;
+  writable: boolean;
+  track_count: number;
+  album_count: number;
+}
+
+export interface StagingImportPlanItem {
+  source_path: string;
+  target_path: string;
+  album: string;
+  artist: string;
+  status: "import" | "skipped" | "conflict";
+  drop_in: boolean;
+  existing_album_title: string | null;
+  reason: string | null;
+}
+
+export interface StagingImportPreviewResponse {
+  target_library_id: string;
+  target_library_name: string;
+  target_library_path: string;
+  template: string;
+  rename_files: boolean;
+  total_tracks: number;
+  import_count: number;
+  drop_in_count: number;
+  skipped_count: number;
+  conflict_count: number;
+  sidecar_moves_count: number;
+  items: StagingImportPlanItem[];
+  sidecars: OrganizeMoveResult[];
+}
+
+export interface StagingImportApplyResponse {
+  target_library_id: string;
+  batch_id: string | null;
+  imported: OrganizeMoveResult[];
+  moved_sidecars: OrganizeMoveResult[];
+  skipped: number;
+  errors: BulkUpdateError[];
+  removed_empty_dirs: number;
+  navidrome_sync: NavidromeSyncResult;
+}
+
+export interface SlskdStatusResponse {
+  configured: boolean;
+  connected: boolean;
+  detail: string | null;
+}
+
+export interface SlskdCandidate {
+  username: string;
+  filename: string;
+  basename: string;
+  directory: string;
+  extension: string;
+  format: string;
+  size: number;
+  bit_rate: number | null;
+  sample_rate: number | null;
+  bit_depth: number | null;
+  length_sec: number | null;
+  duration_diff_sec: number | null;
+  has_free_upload_slot: boolean;
+  upload_speed: number;
+  queue_length: number;
+  score: number;
+  reasons: string[];
+}
+
+export interface SlskdSearchResponse {
+  search_id: string;
+  query: string;
+  state: string;
+  is_complete: boolean;
+  response_count: number;
+  file_count: number;
+  candidates: SlskdCandidate[];
+}
+
+export interface SlskdQueueDownloadResponse {
+  ok: boolean;
+  username: string;
+  queued_count: number;
+  detail: string | null;
+}
+
+export interface SlskdTransferItem {
+  id: string;
+  username: string;
+  filename: string;
+  basename: string;
+  size: number;
+  bytes_transferred: number;
+  percent_complete: number;
+  state: string;
+  average_speed: number;
+  bytes_remaining: number;
+  requested_at: string | null;
+  ended_at: string | null;
+  exception: string | null;
+}
+
+export interface SlskdDownloadsResponse {
+  active_count: number;
+  completed_count: number;
+  failed_count: number;
+  transfers: SlskdTransferItem[];
+}
+
