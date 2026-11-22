@@ -11,9 +11,12 @@ M⁴ ships as a **single Docker container** (FastAPI backend + compiled React/Vi
 
 ## Features
 
-- **Direct On-Disk Tag Editing:** Supports **MP3** (ID3v2), **FLAC** (Vorbis Comments + Picture blocks), **M4A/MP4** (MP4 atoms + `covr`), **OGG Vorbis**, and **Opus** (`METADATA_BLOCK_PICTURE`).
-- **Artist → Album → Track Browser & Diagnostics:** Fast recursive scanner with SQLite `(mtime, size)` caching, instant search, red **Major Metadata Missing** alerts, and **Navidrome Split-Album (`PID.Album`)** mismatch diagnostics.
-- **MusicBrainz Identification (Album & Single Track):** Jellyfin-style album identification with Cover Art Archive previews, plus single-track recording search for untagged stray files.
+- **Navidrome Split-Album (`PID.Album`) & Near-Duplicate Detection:** Diagnostics for why Navidrome splits albums, plus automatic detection of near-duplicate album titles and shared-folder splits with one-click multi-album merge.
+- **Missing Track Detection & Ghost Rows:** Scans for sequence gaps and diffs albums against MusicBrainz releases to show missing tracks as muted "ghost rows", with local library stray search and one-click move.
+- **Optional Staging / Inbox Workspace (`M4_STAGING_DIR`):** Dedicated staging area for cleaning up and inspecting external downloads before moving them cleanly into your music library.
+- **Optional `slskd` (Soulseek) Integration:** Search peer-shared audio directly from missing track ghost rows, ranked by audio format match and duration closeness, with transfer monitoring.
+- **MusicBrainz Identification (Album & Single Track):** Match albums or single tracks with Cover Art Archive previews, title-first track alignment supporting non-Latin (CJK/Unicode) scripts, and external MusicBrainz links.
+- **Modern Responsive 3-Pane UI:** Draggable resizable panels (Artist list, Library/Album view, Metadata Inspector), column visibility toggles, library sorting options (artist, title, missing count, warning count), and collapsible album diagnostics.
 - **Library Folder & Sidecar Organizer:** Persisted per-library folder structure presets (`Artist/Album`, `Artist/Year - Album`, `Album`, `Album - Artist`), dry-run preview with collision detection, safe file moves, companion sidecar mover (`.lrc`, `.txt`, `cover.*`, `folder.*`, `.cue`, `.log`), and empty directory cleanup.
 - **Batch-Grouped Activity History & One-Click Undo:** Bulk tag edits, MusicBrainz album updates, and multi-file reorganizations are grouped into collapsible batches so you can revert an entire 99-file operation (including sidecars) in one click, or expand to inspect/undo individual files.
 - **Multi-Library Support:** Manage multiple music directories (`M4_LIBRARIES`) with isolated scan caches, audit history, and per-library folder organization settings, plus a header Library Switcher.
@@ -52,9 +55,12 @@ docker compose pull && docker compose up -d
 | `M4_MUSIC_DIR` | `/music` | Single-library audio directory (used when `M4_LIBRARIES` is not set) |
 | `M4_LIBRARIES` | *(empty)* | Optional comma-separated list of named libraries: `Main:/music/main,Soundtracks:/music/ost` |
 | `M4_CONFIG_DIR` | `/config` | Directory for SQLite cache, settings, session secret, and audit history (`m4.db`) |
+| `M4_STAGING_DIR` | *(empty)* | Optional staging / inbox directory for cleaning and moving external downloads |
 | `M4_AUTH_USER` | *(empty)* | Optional username to enable built-in Basic Auth / login screen |
 | `M4_AUTH_PASS` | *(empty)* | Optional password (both `M4_AUTH_USER` and `M4_AUTH_PASS` must be set to enable auth) |
 | `M4_SESSION_SECRET` | *(auto)* | Optional HMAC secret for signing session cookies (auto-persisted in `/config/.session_secret` if unset) |
+| `SLSKD_URL` | *(empty)* | Optional base URL of your `slskd` instance (e.g., `http://slskd:5030` or configured via in-app Settings) |
+| `SLSKD_API_KEY` | *(empty)* | Optional API key / JWT for `slskd` |
 | `NAVIDROME_URL` | *(empty)* | Optional base URL of your Navidrome instance (e.g., `http://navidrome:4533`) |
 | `NAVIDROME_USER` | *(empty)* | Optional Navidrome username for Subsonic `startScan` |
 | `NAVIDROME_PASS` | *(empty)* | Optional Navidrome password (sent via salted MD5 Subsonic token auth) |
