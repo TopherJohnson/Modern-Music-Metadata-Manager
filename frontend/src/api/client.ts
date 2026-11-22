@@ -8,6 +8,8 @@ import type {
   BulkUpdatePayload,
   BulkUpdateResponse,
   HealthResponse,
+  IntegrationSettingsResponse,
+  IntegrationSettingsUpdatePayload,
   LibraryInfo,
   LibraryResponse,
   LibrarySearchMissingResponse,
@@ -520,6 +522,56 @@ export function removeSlskdDownload(
   return requestJson<{ ok: boolean }>(
     `/api/slskd/downloads/${encodeURIComponent(username)}/${encodeURIComponent(transferId)}`,
     { method: "DELETE" }
+  );
+}
+
+export function getIntegrationSettings(): Promise<IntegrationSettingsResponse> {
+  return requestJson<IntegrationSettingsResponse>("/api/settings/integrations");
+}
+
+export function saveIntegrationSettings(
+  payload: IntegrationSettingsUpdatePayload
+): Promise<IntegrationSettingsResponse> {
+  return requestJson<IntegrationSettingsResponse>("/api/settings/integrations", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function testSlskdConnection(params: {
+  url?: string;
+  apiKey?: string;
+}): Promise<SlskdStatusResponse> {
+  return requestJson<SlskdStatusResponse>(
+    "/api/settings/integrations/test-slskd",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: params.url ?? null,
+        api_key: params.apiKey ?? null,
+      }),
+    }
+  );
+}
+
+export function testNavidromeConnection(params: {
+  url?: string;
+  user?: string;
+  password?: string;
+}): Promise<NavidromeSyncResult> {
+  return requestJson<NavidromeSyncResult>(
+    "/api/settings/integrations/test-navidrome",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: params.url ?? null,
+        user: params.user ?? null,
+        password: params.password ?? null,
+      }),
+    }
   );
 }
 

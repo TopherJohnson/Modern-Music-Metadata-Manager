@@ -13,6 +13,7 @@ from app.models import (
     SlskdSearchResponse,
     SlskdStatusResponse,
 )
+from app.routers._deps import get_effective_settings
 from app.services.slskd import (
     SlskdError,
     check_slskd_status,
@@ -31,14 +32,14 @@ def _require_slskd(settings: Settings) -> None:
     if not settings.slskd_configured:
         raise HTTPException(
             status_code=400,
-            detail="slskd integration is not configured (set SLSKD_URL and SLSKD_API_KEY).",
+            detail="slskd integration is not configured. Configure it in Settings or via SLSKD_URL / SLSKD_API_KEY.",
         )
 
 
 @router.get("/status", response_model=SlskdStatusResponse)
 async def get_slskd_status(request: Request) -> SlskdStatusResponse:
     """Return whether slskd is configured and reachable."""
-    return await check_slskd_status(request.app.state.settings)
+    return await check_slskd_status(get_effective_settings(request))
 
 
 @router.post("/search", response_model=SlskdSearchResponse)
@@ -47,7 +48,7 @@ async def post_slskd_search(
     payload: SlskdSearchRequest,
 ) -> SlskdSearchResponse:
     """Issue a Soulseek search via slskd and return smart-ranked audio candidates."""
-    settings: Settings = request.app.state.settings
+    settings = get_effective_settings(request)
     _require_slskd(settings)
     try:
         return await search_slskd(settings, payload)
@@ -61,7 +62,7 @@ async def get_slskd_search_results(
     search_id: str,
 ) -> SlskdSearchResponse:
     """Refresh peer responses for an existing slskd search ID."""
-    settings: Settings = request.app.state.settings
+    settings = get_effective_settings(request)
     _require_slskd(settings)
     try:
         return await refresh_slskd_search(settings, search_id)
@@ -75,7 +76,7 @@ async def post_slskd_download(
     payload: SlskdQueueDownloadRequest,
 ) -> SlskdQueueDownloadResponse:
     """Queue one or more peer files for download in slskd."""
-    settings: Settings = request.app.state.settings
+    settings = get_effective_settings(request)
     _require_slskd(settings)
     try:
         return await queue_slskd_downloads(settings, payload.username, payload.files)
@@ -86,7 +87,7 @@ async def post_slskd_download(
 @router.get("/downloads", response_model=SlskdDownloadsResponse)
 async def get_slskd_downloads(request: Request) -> SlskdDownloadsResponse:
     """Return active, completed, and failed download transfers from slskd."""
-    settings: Settings = request.app.state.settings
+    settings = get_effective_settings(request)
     _require_slskd(settings)
     try:
         return await list_slskd_downloads(settings)
@@ -97,7 +98,7 @@ async def get_slskd_downloads(request: Request) -> SlskdDownloadsResponse:
 @router.delete("/downloads/completed")
 async def delete_completed_slskd_downloads(request: Request) -> dict[str, bool]:
     """Clear completed transfers in slskd."""
-    settings: Settings = request.app.state.settings
+    settings = get_effective_settings(request)
     _require_slskd(settings)
     try:
         await clear_completed_slskd_downloads(settings)
@@ -113,7 +114,7 @@ async def delete_slskd_download(
     transfer_id: str,
 ) -> dict[str, bool]:
     """Cancel and remove a single transfer in slskd."""
-    settings: Settings = request.app.state.settings
+    settings = get_effective_settings(request)
     _require_slskd(settings)
     try:
         await remove_slskd_download(settings, username, transfer_id)

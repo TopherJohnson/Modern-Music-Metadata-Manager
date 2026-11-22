@@ -49,6 +49,7 @@ import {
 } from "./components/MusicBrainzModal";
 import { MusicBrainzTrackModal } from "./components/MusicBrainzTrackModal";
 import { OrganizeModal } from "./components/OrganizeModal";
+import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { SlskdDownloadsDrawer } from "./components/SlskdDownloadsDrawer";
 import { SlskdSearchModal } from "./components/SlskdSearchModal";
@@ -192,6 +193,7 @@ export function App() {
     scopePaths: null,
   });
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [undoingId, setUndoingId] = useState<number | null>(null);
   const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TrackMetadata | null>(null);
@@ -1593,6 +1595,7 @@ export function App() {
         syncingNavidrome={syncingNavidrome}
         onOpenOrganize={handleOpenOrganizeLibrary}
         onOpenHistory={() => setHistoryOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
         structureDriftCount={structureDriftCount}
         health={health}
         libraries={libraries}
@@ -1882,6 +1885,41 @@ export function App() {
         onClose={() => setDownloadsDrawerOpen(false)}
         onOpenStaging={() => handleChangeWorkspaceMode("staging")}
         onSummaryChange={setSlskdSummary}
+      />
+
+      <SettingsModal
+        open={settingsOpen}
+        health={health}
+        libraries={libraries}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={(saved) => {
+          setSettingsOpen(false);
+          void refreshHealth().then((h) => {
+            if (h?.slskd_configured) {
+              void refreshSlskdSummary();
+            } else {
+              setSlskdSummary({ active: 0, completed: 0, failed: 0 });
+            }
+          });
+          const activeList = [
+            saved.slskd_enabled && saved.slskd_url && saved.slskd_api_key_set
+              ? "slskd"
+              : null,
+            saved.navidrome_enabled &&
+            saved.navidrome_url &&
+            saved.navidrome_user &&
+            saved.navidrome_pass_set
+              ? "Navidrome"
+              : null,
+          ].filter(Boolean);
+          showToast(
+            "success",
+            "Integration settings saved",
+            activeList.length > 0
+              ? `Active: ${activeList.join(", ")}.`
+              : "Optional integrations are currently disabled."
+          );
+        }}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />

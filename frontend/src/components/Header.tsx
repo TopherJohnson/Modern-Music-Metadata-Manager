@@ -11,6 +11,7 @@ import {
   Radio,
   RefreshCw,
   Search,
+  Settings,
   X,
 } from "lucide-react";
 import type {
@@ -35,6 +36,7 @@ interface HeaderProps {
   syncingNavidrome: boolean;
   onOpenOrganize: () => void;
   onOpenHistory: () => void;
+  onOpenSettings: () => void;
   structureDriftCount: number;
   health: HealthResponse | null;
   libraries: LibraryInfo[];
@@ -59,6 +61,7 @@ export function Header({
   syncingNavidrome,
   onOpenOrganize,
   onOpenHistory,
+  onOpenSettings,
   structureDriftCount,
   health,
   libraries,
@@ -350,6 +353,18 @@ export function Header({
         >
           <History className="h-3.5 w-3.5 text-ink-secondary" />
           <span className="hidden xl:inline">History</span>
+        </button>
+
+        <button
+          id="open-settings-btn"
+          type="button"
+          onClick={onOpenSettings}
+          className="m4-btn-secondary h-8 px-2.5 text-xs"
+          title="Configure optional integrations (slskd, Navidrome) and inspect mounts"
+          aria-label="Open Settings"
+        >
+          <Settings className="h-3.5 w-3.5 text-ink-secondary" />
+          <span className="hidden xl:inline">Settings</span>
         </button>
 
         <button

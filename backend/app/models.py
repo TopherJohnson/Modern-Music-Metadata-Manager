@@ -816,4 +816,63 @@ class SlskdDownloadsResponse(BaseModel):
     transfers: list[SlskdTransferItem] = Field(default_factory=list)
 
 
+class IntegrationSettingsStored(BaseModel):
+    """Persisted in-app integration settings stored in /config/m4.db."""
+
+    slskd_enabled: bool | None = None
+    slskd_url: str | None = None
+    slskd_api_key: str | None = None
+    navidrome_enabled: bool | None = None
+    navidrome_url: str | None = None
+    navidrome_user: str | None = None
+    navidrome_pass: str | None = None
+    navidrome_auto_scan: bool | None = None
+
+
+class IntegrationSettingsResponse(BaseModel):
+    """Safe API view of effective integration settings (secrets are never echoed back)."""
+
+    slskd_enabled: bool = False
+    slskd_url: str | None = None
+    slskd_api_key_set: bool = False
+    slskd_from_env: bool = False
+    navidrome_enabled: bool = False
+    navidrome_url: str | None = None
+    navidrome_user: str | None = None
+    navidrome_pass_set: bool = False
+    navidrome_auto_scan: bool = True
+    navidrome_from_env: bool = False
+
+
+class IntegrationSettingsUpdateRequest(BaseModel):
+    """Update in-app integration settings (omit or pass null on secret fields to keep existing secrets)."""
+
+    slskd_enabled: bool | None = None
+    slskd_url: str | None = None
+    slskd_api_key: str | None = None
+    clear_slskd_api_key: bool = False
+    navidrome_enabled: bool | None = None
+    navidrome_url: str | None = None
+    navidrome_user: str | None = None
+    navidrome_pass: str | None = None
+    clear_navidrome_pass: bool = False
+    navidrome_auto_scan: bool | None = None
+
+
+class TestSlskdRequest(BaseModel):
+    """Test a slskd connection using unsaved form values (or saved credentials if omitted)."""
+
+    url: str | None = None
+    api_key: str | None = None
+
+
+class TestNavidromeRequest(BaseModel):
+    """Test a Navidrome connection using unsaved form values (or saved credentials if omitted)."""
+
+    url: str | None = None
+    user: str | None = None
+    password: str | None = None
+
+
 AlbumMergeResponse.model_rebuild()
+

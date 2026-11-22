@@ -2049,3 +2049,136 @@ def test_slskd_ranking_search_queue_and_downloads_independent_of_staging(
         assert dl_res.json()["active_count"] == 1
         assert dl_res.json()["transfers"][0]["percent_complete"] == 50.0
 
+
+def test_in_app_integration_settings_and_live_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In-app Settings persist slskd & Navidrome config in SQLite, mask secrets, and take effect immediately without restart."""
+    from app.models import NavidromeSyncResult, SlskdStatusResponse
+    from app.routers import settings as settings_router
+
+    music_dir = tmp_path / "music"
+    config_dir = tmp_path / "config"
+    music_dir.mkdir()
+    config_dir.mkdir()
+
+    probed_slskd: list[tuple[str | None, str | None]] = []
+    probed_nav: list[tuple[str | None, str | None, str | None]] = []
+
+    async def fake_check_slskd(probe_settings):
+        probed_slskd.append((probe_settings.slskd_url, probe_settings.slskd_api_key))
+        return SlskdStatusResponse(
+            configured=True,
+            connected=True,
+            detail="Connected to slskd (v0.22.0)",
+        )
+
+    async def fake_test_navidrome(url, user, password):
+        probed_nav.append((url, user, password))
+        return NavidromeSyncResult(
+            configured=True,
+            triggered=False,
+            ok=True,
+            detail="Connected to Navidrome",
+        )
+
+    monkeypatch.setattr(settings_router, "check_slskd_status", fake_check_slskd)
+    monkeypatch.setattr(settings_router, "test_navidrome_connection", fake_test_navidrome)
+
+    base_settings = Settings(
+        music_dir=music_dir,
+        config_dir=config_dir,
+        static_dir=None,
+        navidrome_url=None,
+        navidrome_user=None,
+        navidrome_pass=None,
+        navidrome_auto_scan=True,
+        log_level="warning",
+        staging_dir=None,
+        slskd_url=None,
+        slskd_api_key=None,
+    )
+
+    with TestClient(create_app(settings=base_settings)) as tc:
+        # Initially unconfigured
+        health0 = tc.get("/api/health").json()
+        assert health0["slskd_configured"] is False
+        assert health0["navidrome_configured"] is False
+
+        cfg0 = tc.get("/api/settings/integrations").json()
+        assert cfg0["slskd_enabled"] is False
+        assert cfg0["slskd_api_key_set"] is False
+        assert cfg0["navidrome_enabled"] is False
+        assert cfg0["navidrome_pass_set"] is False
+
+        # Save both slskd and Navidrome in-app — secrets must NOT be echoed back
+        put1 = tc.put(
+            "/api/settings/integrations",
+            json={
+                "slskd_enabled": True,
+                "slskd_url": "http://gluetun:5030/",
+                "slskd_api_key": "super-secret-slskd-key",
+                "navidrome_enabled": True,
+                "navidrome_url": "http://navidrome:4533/",
+                "navidrome_user": "chris",
+                "navidrome_pass": "nav-secret-pass",
+                "navidrome_auto_scan": True,
+            },
+        )
+        assert put1.status_code == 200
+        body1 = put1.json()
+        assert body1["slskd_enabled"] is True
+        assert body1["slskd_url"] == "http://gluetun:5030"
+        assert body1["slskd_api_key_set"] is True
+        assert "super-secret-slskd-key" not in put1.text
+        assert body1["navidrome_enabled"] is True
+        assert body1["navidrome_url"] == "http://navidrome:4533"
+        assert body1["navidrome_user"] == "chris"
+        assert body1["navidrome_pass_set"] is True
+        assert "nav-secret-pass" not in put1.text
+
+        # Immediately active in /api/health with zero container restart
+        health1 = tc.get("/api/health").json()
+        assert health1["slskd_configured"] is True
+        assert health1["navidrome_configured"] is True
+
+        # Partial update changing only slskd_url preserves the saved API key
+        put2 = tc.put(
+            "/api/settings/integrations",
+            json={"slskd_url": "http://slskd-host:5030"},
+        )
+        assert put2.status_code == 200
+        assert put2.json()["slskd_url"] == "http://slskd-host:5030"
+        assert put2.json()["slskd_api_key_set"] is True
+
+        # Test connection using saved credentials (omitting api_key/password)
+        t_slskd = tc.post("/api/settings/integrations/test-slskd", json={})
+        assert t_slskd.status_code == 200
+        assert t_slskd.json()["connected"] is True
+        assert probed_slskd[-1] == ("http://slskd-host:5030", "super-secret-slskd-key")
+
+        # Test connection with unsaved form overrides
+        t_nav = tc.post(
+            "/api/settings/integrations/test-navidrome",
+            json={"url": "http://alt-nav:4533/", "user": "admin"},
+        )
+        assert t_nav.status_code == 200
+        assert t_nav.json()["ok"] is True
+        assert probed_nav[-1] == ("http://alt-nav:4533", "admin", "nav-secret-pass")
+
+        # Disabling slskd immediately disables health flag and rejects /api/slskd/search
+        put3 = tc.put("/api/settings/integrations", json={"slskd_enabled": False})
+        assert put3.status_code == 200
+        assert tc.get("/api/health").json()["slskd_configured"] is False
+        assert tc.post("/api/slskd/search", json={"query": "test"}).status_code == 400
+
+        # Clearing API key removes stored secret
+        put4 = tc.put(
+            "/api/settings/integrations",
+            json={"slskd_enabled": True, "clear_slskd_api_key": True},
+        )
+        assert put4.status_code == 200
+        assert put4.json()["slskd_api_key_set"] is False
+        assert tc.get("/api/health").json()["slskd_configured"] is False
+
+

@@ -12,6 +12,7 @@ from app.models import (
     StagingImportPreviewResponse,
     StagingStatusResponse,
 )
+from app.routers._deps import get_effective_settings
 from app.routers.health import _check_dir_permissions
 from app.services.navidrome import trigger_navidrome_scan
 from app.services.scanner import build_library_response, scan_library
@@ -124,7 +125,7 @@ async def apply_staging_import_endpoint(
     payload: StagingImportApplyRequest,
 ) -> StagingImportApplyResponse:
     """Move staged tracks + companion sidecars into the target library and trigger one Navidrome scan."""
-    settings: Settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
 
     staging_lib = _require_staging(settings)

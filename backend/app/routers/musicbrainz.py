@@ -20,7 +20,7 @@ from app.models import (
     MusicBrainzTrackMatch,
     TrackMetadata,
 )
-from app.routers._deps import resolve_library
+from app.routers._deps import get_effective_settings, resolve_library
 from app.services.musicbrainz import (
     MusicBrainzError,
     fetch_cover_art,
@@ -132,7 +132,7 @@ async def apply_musicbrainz_release(
     payload: MusicBrainzApplyRequest,
 ) -> MusicBrainzApplyResponse:
     """Apply metadata and/or cover art from a chosen MusicBrainz release onto target tracks."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -309,7 +309,7 @@ async def apply_musicbrainz_track(
     payload: MusicBrainzApplyTrackRequest,
 ) -> MusicBrainzApplyTrackResponse:
     """Apply a MusicBrainz single-track match (metadata + optional cover art) to one audio file."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 

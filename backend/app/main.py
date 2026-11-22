@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.config import Settings, load_settings
 from app.database import Database
-from app.routers import auth, completeness, health, library, musicbrainz, organize, slskd, staging, tracks
+from app.routers import auth, completeness, health, library, musicbrainz, organize, settings as settings_router, slskd, staging, tracks
 from app.services.auth import authenticate_request, load_or_create_session_secret
 
 _AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
@@ -92,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(health.router)
+    app.include_router(settings_router.router)
     app.include_router(library.router)
     app.include_router(completeness.router)
     app.include_router(staging.router)

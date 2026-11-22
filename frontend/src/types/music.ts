@@ -579,3 +579,30 @@ export interface SlskdDownloadsResponse {
   transfers: SlskdTransferItem[];
 }
 
+export interface IntegrationSettingsResponse {
+  slskd_enabled: boolean;
+  slskd_url: string | null;
+  slskd_api_key_set: boolean;
+  slskd_from_env: boolean;
+  navidrome_enabled: boolean;
+  navidrome_url: string | null;
+  navidrome_user: string | null;
+  navidrome_pass_set: boolean;
+  navidrome_auto_scan: boolean;
+  navidrome_from_env: boolean;
+}
+
+export interface IntegrationSettingsUpdatePayload {
+  slskd_enabled?: boolean;
+  slskd_url?: string;
+  slskd_api_key?: string | null;
+  clear_slskd_api_key?: boolean;
+  navidrome_enabled?: boolean;
+  navidrome_url?: string;
+  navidrome_user?: string;
+  navidrome_pass?: string | null;
+  clear_navidrome_pass?: boolean;
+  navidrome_auto_scan?: boolean;
+}
+
+

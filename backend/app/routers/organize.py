@@ -11,7 +11,7 @@ from app.models import (
     OrganizePreviewResponse,
     OrganizeSettings,
 )
-from app.routers._deps import resolve_library
+from app.routers._deps import get_effective_settings, resolve_library
 from app.services.navidrome import trigger_navidrome_scan
 from app.services.organizer import (
     VALID_TEMPLATES,
@@ -82,7 +82,7 @@ async def post_organize_apply(
     payload: OrganizeApplyRequest | None = None,
 ) -> OrganizeApplyResponse:
     """Execute library folder reorganization moves on disk and optionally trigger a Navidrome scan."""
-    app_settings = request.app.state.settings
+    app_settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 

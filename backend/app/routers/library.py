@@ -17,7 +17,7 @@ from app.models import (
     TrackMetadata,
     UndoResponse,
 )
-from app.routers._deps import resolve_library
+from app.routers._deps import get_effective_settings, resolve_library
 from app.services.navidrome import trigger_navidrome_scan
 from app.services.organizer import undo_track_move
 from app.services.scanner import build_library_response, scan_library
@@ -140,7 +140,7 @@ async def undo_history_batch(
     trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
 ) -> BatchUndoResponse:
     """Revert every remaining undoable entry in a grouped history batch in reverse order."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -194,7 +194,7 @@ async def undo_history_entry(
     trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
 ) -> UndoResponse:
     """Revert a single previous tag edit or file move recorded in `/config/m4.db`."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -243,5 +243,5 @@ async def undo_history_entry(
 @router.post("/navidrome/scan", response_model=NavidromeSyncResult)
 async def post_navidrome_scan(request: Request) -> NavidromeSyncResult:
     """Manually trigger a Navidrome Subsonic `startScan` call."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     return await trigger_navidrome_scan(settings, requested=True)

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 
 from app import __version__
 from app.models import HealthResponse, LibraryInfo
+from app.routers._deps import get_effective_settings
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -35,7 +36,7 @@ def _check_dir_permissions(path: Path) -> tuple[bool, bool, bool]:
 @router.get("/health", response_model=HealthResponse)
 async def get_health(request: Request) -> HealthResponse:
     """Return container status and music/config mount readability & writability."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
 
     default_lib = settings.default_library
