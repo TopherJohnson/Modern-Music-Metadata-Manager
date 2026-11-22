@@ -12,9 +12,10 @@ from typing import Any, Iterator
 from app.models import AuditEntry, OrganizeSettings, TrackMetadata
 
 
-SCHEMA_SQL = """
+TRACK_CACHE_DDL = """
 CREATE TABLE IF NOT EXISTS track_cache (
-    path TEXT PRIMARY KEY,
+    library_id TEXT NOT NULL DEFAULT 'default',
+    path TEXT NOT NULL,
     filename TEXT NOT NULL,
     format TEXT NOT NULL,
     mtime REAL NOT NULL,
@@ -39,12 +40,19 @@ CREATE TABLE IF NOT EXISTS track_cache (
     album_version TEXT,
     compilation TEXT,
     musicbrainz_album_id TEXT,
-    musicbrainz_album_artist_id TEXT
+    musicbrainz_album_artist_id TEXT,
+    PRIMARY KEY (library_id, path)
 );
+"""
 
+SCHEMA_SQL = (
+    TRACK_CACHE_DDL
+    + """
 CREATE TABLE IF NOT EXISTS audit_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
+    library_id TEXT NOT NULL DEFAULT 'default',
+    batch_id TEXT,
     path TEXT NOT NULL,
     action TEXT NOT NULL,
     before_json TEXT NOT NULL,
@@ -60,6 +68,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 """
+)
 
 # Columns added after v0.1.0 initial schema; auto-migrated on startup.
 _TRACK_CACHE_MIGRATIONS: tuple[tuple[str, str], ...] = (
@@ -90,20 +99,25 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA_SQL)
+
             existing_cols = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(track_cache)").fetchall()
             }
-            migrated = False
-            for col_name, col_type in _TRACK_CACHE_MIGRATIONS:
-                if col_name not in existing_cols:
-                    conn.execute(
-                        f"ALTER TABLE track_cache ADD COLUMN {col_name} {col_type}"
-                    )
-                    migrated = True
-            if migrated:
-                # Clear stale cache rows once so the next scan populates the new metadata fields.
-                conn.execute("DELETE FROM track_cache")
+            if "library_id" not in existing_cols:
+                # Rebuild the regenerable scan cache with composite PRIMARY KEY (library_id, path)
+                conn.execute("DROP TABLE track_cache")
+                conn.executescript(TRACK_CACHE_DDL)
+            else:
+                migrated = False
+                for col_name, col_type in _TRACK_CACHE_MIGRATIONS:
+                    if col_name not in existing_cols:
+                        conn.execute(
+                            f"ALTER TABLE track_cache ADD COLUMN {col_name} {col_type}"
+                        )
+                        migrated = True
+                if migrated:
+                    conn.execute("DELETE FROM track_cache")
 
             audit_cols = {
                 row["name"]
@@ -113,6 +127,19 @@ class Database:
                 conn.execute(
                     "ALTER TABLE audit_history ADD COLUMN undone INTEGER NOT NULL DEFAULT 0"
                 )
+            if "library_id" not in audit_cols:
+                conn.execute(
+                    "ALTER TABLE audit_history ADD COLUMN library_id TEXT NOT NULL DEFAULT 'default'"
+                )
+            if "batch_id" not in audit_cols:
+                conn.execute("ALTER TABLE audit_history ADD COLUMN batch_id TEXT")
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_audit_history_library ON audit_history (library_id, id DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_audit_history_batch ON audit_history (batch_id)"
+            )
         self._initialized = True
 
     @contextmanager
@@ -127,27 +154,41 @@ class Database:
         finally:
             conn.close()
 
-    def get_cached_tracks(self) -> dict[str, TrackMetadata]:
-        """Return all cached tracks keyed by their relative POSIX path."""
+    def get_cached_tracks(self, library_id: str = "default") -> dict[str, TrackMetadata]:
+        """Return all cached tracks for `library_id` keyed by their relative POSIX path."""
         if not self._initialized and not self.db_path.exists():
             return {}
         with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM track_cache").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM track_cache WHERE library_id = ?",
+                (library_id,),
+            ).fetchall()
         return {row["path"]: self._row_to_track(row) for row in rows}
 
-    def count_cached_tracks(self) -> int:
+    def count_cached_tracks(self, library_id: str | None = None) -> int:
         if not self.db_path.exists():
             return 0
         with self._connect() as conn:
-            row = conn.execute("SELECT COUNT(*) AS cnt FROM track_cache").fetchone()
+            if library_id is None:
+                row = conn.execute("SELECT COUNT(*) AS cnt FROM track_cache").fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM track_cache WHERE library_id = ?",
+                    (library_id,),
+                ).fetchone()
         return int(row["cnt"]) if row else 0
 
-    def upsert_tracks(self, tracks: list[TrackMetadata]) -> None:
-        """Insert or update cached metadata rows."""
+    def upsert_tracks(
+        self,
+        tracks: list[TrackMetadata],
+        library_id: str = "default",
+    ) -> None:
+        """Insert or update cached metadata rows for `library_id`."""
         if not tracks:
             return
         params = [
             (
+                library_id,
                 t.path,
                 t.filename,
                 t.format,
@@ -181,15 +222,15 @@ class Database:
             conn.executemany(
                 """
                 INSERT INTO track_cache (
-                    path, filename, format, mtime, file_size, duration,
+                    library_id, path, filename, format, mtime, file_size, duration,
                     bitrate, sample_rate, has_artwork, artwork_mime,
                     artwork_hash, artwork_size,
                     title, artist, album_artist, album, year,
                     track_number, disc_number, genre, composer,
                     release_date, album_version, compilation,
                     musicbrainz_album_id, musicbrainz_album_artist_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(library_id, path) DO UPDATE SET
                     filename=excluded.filename,
                     format=excluded.format,
                     mtime=excluded.mtime,
@@ -219,14 +260,14 @@ class Database:
                 params,
             )
 
-    def remove_paths(self, paths: list[str]) -> None:
+    def remove_paths(self, paths: list[str], library_id: str = "default") -> None:
         """Delete stale rows whose files no longer exist on disk."""
         if not paths:
             return
         with self._connect() as conn:
             conn.executemany(
-                "DELETE FROM track_cache WHERE path = ?",
-                [(p,) for p in paths],
+                "DELETE FROM track_cache WHERE library_id = ? AND path = ?",
+                [(library_id, p) for p in paths],
             )
 
     def record_audit(
@@ -235,32 +276,60 @@ class Database:
         action: str,
         before_tags: dict[str, Any],
         after_tags: dict[str, Any],
+        *,
+        library_id: str = "default",
+        batch_id: str | None = None,
     ) -> None:
-        """Append a metadata edit event for audit/undo history."""
+        """Append a metadata edit or file move event for audit/undo history."""
         ts = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO audit_history (timestamp, path, action, before_json, after_json)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO audit_history (timestamp, library_id, batch_id, path, action, before_json, after_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (ts, path, action, json.dumps(before_tags), json.dumps(after_tags)),
+                (
+                    ts,
+                    library_id,
+                    batch_id,
+                    path,
+                    action,
+                    json.dumps(before_tags),
+                    json.dumps(after_tags),
+                ),
             )
 
-    def get_audit_history(self, limit: int = 50) -> list[AuditEntry]:
-        """Return the most recent metadata modification records."""
+    def get_audit_history(
+        self,
+        limit: int = 100,
+        *,
+        library_id: str | None = None,
+    ) -> list[AuditEntry]:
+        """Return the most recent metadata modification records, optionally scoped by library."""
         if not self.db_path.exists():
             return []
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, timestamp, path, action, before_json, after_json, undone
-                FROM audit_history
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            if library_id is None:
+                rows = conn.execute(
+                    """
+                    SELECT id, timestamp, library_id, batch_id, path, action, before_json, after_json, undone
+                    FROM audit_history
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, timestamp, library_id, batch_id, path, action, before_json, after_json, undone
+                    FROM audit_history
+                    WHERE library_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (library_id, limit),
+                ).fetchall()
         return [self._row_to_audit(row) for row in rows]
 
     def get_audit_entry(self, entry_id: int) -> AuditEntry | None:
@@ -270,13 +339,45 @@ class Database:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, timestamp, path, action, before_json, after_json, undone
+                SELECT id, timestamp, library_id, batch_id, path, action, before_json, after_json, undone
                 FROM audit_history
                 WHERE id = ?
                 """,
                 (entry_id,),
             ).fetchone()
         return self._row_to_audit(row) if row else None
+
+    def get_audit_batch(
+        self,
+        batch_id: str,
+        *,
+        library_id: str | None = None,
+    ) -> list[AuditEntry]:
+        """Fetch all audit entries belonging to `batch_id` in reverse execution order (id DESC)."""
+        if not self.db_path.exists():
+            return []
+        with self._connect() as conn:
+            if library_id is None:
+                rows = conn.execute(
+                    """
+                    SELECT id, timestamp, library_id, batch_id, path, action, before_json, after_json, undone
+                    FROM audit_history
+                    WHERE batch_id = ?
+                    ORDER BY id DESC
+                    """,
+                    (batch_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, timestamp, library_id, batch_id, path, action, before_json, after_json, undone
+                    FROM audit_history
+                    WHERE batch_id = ? AND library_id = ?
+                    ORDER BY id DESC
+                    """,
+                    (batch_id, library_id),
+                ).fetchall()
+        return [self._row_to_audit(row) for row in rows]
 
     def mark_audit_undone(self, entry_id: int) -> None:
         """Mark an audit history entry as already undone."""
@@ -312,6 +413,8 @@ class Database:
         return AuditEntry(
             id=row["id"],
             timestamp=row["timestamp"],
+            library_id=str(row["library_id"] or "default"),
+            batch_id=row["batch_id"],
             path=row["path"],
             action=action,
             before_tags=before,
@@ -321,15 +424,21 @@ class Database:
             changed_fields=changed_fields,
         )
 
-    def get_organize_settings(self) -> OrganizeSettings:
-        """Load persisted library folder organization preferences from app_settings."""
+    def get_organize_settings(self, library_id: str = "default") -> OrganizeSettings:
+        """Load persisted library folder organization preferences for `library_id`."""
         if not self.db_path.exists():
             return OrganizeSettings()
+        scoped_key = f"organize_settings:{library_id}"
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT value FROM app_settings WHERE key = ?",
-                ("organize_settings",),
+                (scoped_key,),
             ).fetchone()
+            if not row and library_id == "default":
+                row = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = ?",
+                    ("organize_settings",),
+                ).fetchone()
         if not row:
             return OrganizeSettings()
         try:
@@ -337,16 +446,21 @@ class Database:
         except Exception:
             return OrganizeSettings()
 
-    def save_organize_settings(self, settings: OrganizeSettings) -> OrganizeSettings:
-        """Persist library folder organization preferences in app_settings."""
+    def save_organize_settings(
+        self,
+        settings: OrganizeSettings,
+        library_id: str = "default",
+    ) -> OrganizeSettings:
+        """Persist library folder organization preferences for `library_id` in app_settings."""
         payload = settings.model_dump_json()
+        scoped_key = f"organize_settings:{library_id}"
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO app_settings (key, value) VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 """,
-                ("organize_settings", payload),
+                (scoped_key, payload),
             )
         return settings
 

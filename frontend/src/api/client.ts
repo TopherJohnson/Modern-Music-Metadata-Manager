@@ -1,8 +1,11 @@
 import type {
   AuditEntry,
+  AuthStatusResponse,
+  BatchUndoResponse,
   BulkUpdatePayload,
   BulkUpdateResponse,
   HealthResponse,
+  LibraryInfo,
   LibraryResponse,
   MusicBrainzApplyPayload,
   MusicBrainzApplyResponse,
@@ -31,9 +34,33 @@ class ApiError extends Error {
   }
 }
 
+let activeLibraryId: string | null = null;
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setActiveLibraryId(libraryId: string | null): void {
+  activeLibraryId = libraryId;
+}
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const headers = new Headers(init?.headers);
+  if (activeLibraryId) {
+    headers.set("X-M4-Library", activeLibraryId);
+  }
+
+  const response = await fetch(url, {
+    ...init,
+    credentials: "same-origin",
+    headers,
+  });
+
   if (!response.ok) {
+    if (response.status === 401 && !url.startsWith("/api/auth/")) {
+      unauthorizedHandler?.();
+    }
     let detail = `Request failed (${response.status})`;
     try {
       const data = await response.json();
@@ -48,8 +75,33 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+export function getAuthStatus(): Promise<AuthStatusResponse> {
+  return requestJson<AuthStatusResponse>("/api/auth/status");
+}
+
+export function login(
+  username: string,
+  password: string
+): Promise<AuthStatusResponse> {
+  return requestJson<AuthStatusResponse>("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logout(): Promise<AuthStatusResponse> {
+  return requestJson<AuthStatusResponse>("/api/auth/logout", {
+    method: "POST",
+  });
+}
+
 export function getHealth(): Promise<HealthResponse> {
   return requestJson<HealthResponse>("/api/health");
+}
+
+export function getLibraries(): Promise<LibraryInfo[]> {
+  return requestJson<LibraryInfo[]>("/api/libraries");
 }
 
 export function getLibrary(query?: string, rescan = false): Promise<LibraryResponse> {
@@ -228,7 +280,7 @@ export function applyOrganize(
   });
 }
 
-export function getHistory(limit = 100): Promise<AuditEntry[]> {
+export function getHistory(limit = 200): Promise<AuditEntry[]> {
   return requestJson<AuditEntry[]>(`/api/history?limit=${limit}`);
 }
 
@@ -238,8 +290,17 @@ export function undoHistoryEntry(entryId: number): Promise<UndoResponse> {
   });
 }
 
+export function undoHistoryBatch(batchId: string): Promise<BatchUndoResponse> {
+  return requestJson<BatchUndoResponse>(`/api/history/batch/${encodeURIComponent(batchId)}/undo`, {
+    method: "POST",
+  });
+}
+
 export function getArtworkUrl(path: string, version?: number): string {
   const params = new URLSearchParams({ path });
+  if (activeLibraryId) {
+    params.set("library", activeLibraryId);
+  }
   if (version !== undefined) {
     params.set("v", String(Math.floor(version)));
   }

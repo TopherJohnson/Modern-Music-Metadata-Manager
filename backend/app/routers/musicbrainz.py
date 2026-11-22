@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from app.models import (
@@ -15,6 +17,7 @@ from app.models import (
     MusicBrainzTrackCandidate,
     TrackMetadata,
 )
+from app.routers._deps import resolve_library
 from app.services.musicbrainz import (
     MusicBrainzError,
     fetch_cover_art,
@@ -89,6 +92,7 @@ async def apply_musicbrainz_release(
     """Apply metadata and/or cover art from a chosen MusicBrainz release onto target tracks."""
     settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     if not payload.apply_metadata and not payload.apply_artwork and not payload.apply_track_titles:
         raise HTTPException(
@@ -116,6 +120,8 @@ async def apply_musicbrainz_release(
                 raise HTTPException(status_code=404, detail=artwork_note)
 
     target_paths = list(dict.fromkeys(payload.paths))
+    tag_batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
+    art_batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
 
     # Build album-level tag updates from MusicBrainz release
     shared_updates: dict[str, str | None] = {}
@@ -154,20 +160,20 @@ async def apply_musicbrainz_release(
 
             after: TrackMetadata | None = None
             if file_updates:
-                before, after = write_track_metadata(
-                    settings.music_dir, rel_path, file_updates
-                )
+                before, after = write_track_metadata(lib.path, rel_path, file_updates)
                 db.record_audit(
                     path=after.path,
                     action="musicbrainz_apply",
                     before_tags=_tag_snapshot(before),
                     after_tags=_tag_snapshot(after),
+                    library_id=lib.id,
+                    batch_id=tag_batch_id,
                 )
 
             if cover_result is not None:
                 img_bytes, img_mime = cover_result
                 after = write_track_artwork(
-                    settings.music_dir,
+                    lib.path,
                     rel_path,
                     img_bytes,
                     mime_type=img_mime,
@@ -178,16 +184,18 @@ async def apply_musicbrainz_release(
                     action="musicbrainz_artwork",
                     before_tags={},
                     after_tags={"mbid": payload.mbid, "artwork_hash": after.artwork_hash},
+                    library_id=lib.id,
+                    batch_id=art_batch_id,
                 )
 
             if after is None:
-                after = read_track_metadata(settings.music_dir, rel_path)
+                after = read_track_metadata(lib.path, rel_path)
             updated.append(after)
         except Exception as exc:
             errors.append(BulkUpdateError(path=rel_path, error=str(exc)))
 
     if updated:
-        db.upsert_tracks(updated)
+        db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
         settings, requested=payload.trigger_navidrome_scan and bool(updated)
@@ -235,6 +243,7 @@ async def apply_musicbrainz_track(
     """Apply a MusicBrainz single-track match (metadata + optional cover art) to one audio file."""
     settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     updates: dict[str, str | None] = {
         "title": payload.title,
@@ -263,12 +272,13 @@ async def apply_musicbrainz_track(
             pass
 
     try:
-        before, after = write_track_metadata(settings.music_dir, payload.path, updates)
+        before, after = write_track_metadata(lib.path, payload.path, updates)
         db.record_audit(
             path=after.path,
             action="musicbrainz_apply_track",
             before_tags=_tag_snapshot(before),
             after_tags=_tag_snapshot(after),
+            library_id=lib.id,
         )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Failed to write track tags: {exc}") from exc
@@ -281,7 +291,7 @@ async def apply_musicbrainz_track(
             if cover_result is not None:
                 img_bytes, img_mime = cover_result
                 after = write_track_artwork(
-                    settings.music_dir,
+                    lib.path,
                     payload.path,
                     img_bytes,
                     mime_type=img_mime,
@@ -292,13 +302,14 @@ async def apply_musicbrainz_track(
                     action="musicbrainz_artwork",
                     before_tags={},
                     after_tags={"mbid": payload.release_mbid, "artwork_hash": after.artwork_hash},
+                    library_id=lib.id,
                 )
             else:
                 artwork_note = "No cover image found on Cover Art Archive for this release."
         except Exception as exc:
             artwork_note = f"Tags saved, but cover art failed: {exc}"
 
-    db.upsert_tracks([after])
+    db.upsert_tracks([after], library_id=lib.id)
     navidrome_sync = await trigger_navidrome_scan(
         settings, requested=payload.trigger_navidrome_scan
     )

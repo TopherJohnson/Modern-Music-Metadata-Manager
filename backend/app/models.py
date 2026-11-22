@@ -27,6 +27,35 @@ class HealthResponse(BaseModel):
     config_dir_writable: bool
     navidrome_configured: bool
     cached_tracks: int
+    auth_enabled: bool = False
+    libraries_count: int = 1
+
+
+class LibraryInfo(BaseModel):
+    """Metadata and mount readiness for a single configured music library."""
+
+    id: str
+    name: str
+    path: str
+    exists: bool
+    readable: bool
+    writable: bool
+    cached_tracks: int = 0
+
+
+class AuthStatusResponse(BaseModel):
+    """Current authentication mode and session status for the browser client."""
+
+    enabled: bool
+    authenticated: bool
+    username: str | None = None
+
+
+class LoginRequest(BaseModel):
+    """Credentials payload for POST /api/auth/login."""
+
+    username: str
+    password: str
 
 
 class TrackTags(BaseModel):
@@ -226,6 +255,8 @@ class AuditEntry(BaseModel):
 
     id: int
     timestamp: str
+    library_id: str = "default"
+    batch_id: str | None = None
     path: str
     action: str
     before_tags: dict[str, str | list[dict[str, str]] | None]
@@ -243,6 +274,16 @@ class UndoResponse(BaseModel):
     restored_path: str
     restored_sidecars: int = 0
     track: TrackMetadata | None = None
+    navidrome_sync: NavidromeSyncResult
+
+
+class BatchUndoResponse(BaseModel):
+    """Result of undoing an entire batch of grouped metadata edits or file moves."""
+
+    batch_id: str
+    undone_count: int
+    restored_sidecars: int = 0
+    errors: list[BulkUpdateError] = Field(default_factory=list)
     navidrome_sync: NavidromeSyncResult
 
 

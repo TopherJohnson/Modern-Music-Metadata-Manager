@@ -126,6 +126,24 @@ export interface HealthResponse {
   config_dir_writable: boolean;
   navidrome_configured: boolean;
   cached_tracks: number;
+  auth_enabled?: boolean;
+  libraries_count?: number;
+}
+
+export interface LibraryInfo {
+  id: string;
+  name: string;
+  path: string;
+  exists: boolean;
+  readable: boolean;
+  writable: boolean;
+  cached_tracks: number;
+}
+
+export interface AuthStatusResponse {
+  enabled: boolean;
+  authenticated: boolean;
+  username: string | null;
 }
 
 export interface TrackUpdatePayload extends Partial<TrackTags> {
@@ -280,6 +298,8 @@ export interface OrganizeApplyResponse {
 export interface AuditEntry {
   id: number;
   timestamp: string;
+  library_id: string;
+  batch_id: string | null;
   path: string;
   action: string;
   before_tags: Record<string, string | Array<{ source: string; target: string }> | null>;
@@ -295,5 +315,13 @@ export interface UndoResponse {
   restored_path: string;
   restored_sidecars: number;
   track: TrackMetadata | null;
+  navidrome_sync: NavidromeSyncResult;
+}
+
+export interface BatchUndoResponse {
+  batch_id: string;
+  undone_count: number;
+  restored_sidecars: number;
+  errors: BulkUpdateError[];
   navidrome_sync: NavidromeSyncResult;
 }

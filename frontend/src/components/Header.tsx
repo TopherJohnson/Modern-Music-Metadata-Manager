@@ -4,12 +4,18 @@ import {
   FolderTree,
   HardDrive,
   History,
+  Library,
+  LogOut,
   Radio,
   RefreshCw,
   Search,
   X,
 } from "lucide-react";
-import type { HealthResponse } from "../types/music";
+import type {
+  AuthStatusResponse,
+  HealthResponse,
+  LibraryInfo,
+} from "../types/music";
 
 interface HeaderProps {
   query: string;
@@ -22,6 +28,11 @@ interface HeaderProps {
   onOpenHistory: () => void;
   structureDriftCount: number;
   health: HealthResponse | null;
+  libraries: LibraryInfo[];
+  activeLibrary: LibraryInfo | null;
+  onSelectLibrary: (libraryId: string) => void;
+  authStatus: AuthStatusResponse | null;
+  onLogout: () => void;
   trackCount: number;
 }
 
@@ -36,6 +47,11 @@ export function Header({
   onOpenHistory,
   structureDriftCount,
   health,
+  libraries,
+  activeLibrary,
+  onSelectLibrary,
+  authStatus,
+  onLogout,
   trackCount,
 }: HeaderProps) {
   const searchRef = useRef<HTMLInputElement>(null);
@@ -51,26 +67,33 @@ export function Header({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const mountOk =
-    health !== null &&
-    health.music_dir_exists &&
-    health.music_dir_readable &&
-    health.music_dir_writable;
+  const mountExists = activeLibrary
+    ? activeLibrary.exists
+    : (health?.music_dir_exists ?? false);
+  const mountReadable = activeLibrary
+    ? activeLibrary.readable
+    : (health?.music_dir_readable ?? false);
+  const mountWritable = activeLibrary
+    ? activeLibrary.writable
+    : (health?.music_dir_writable ?? false);
+  const mountPath = activeLibrary?.path ?? health?.music_dir ?? "/music";
+  const mountKnown = activeLibrary !== null || health !== null;
+  const mountOk = mountKnown && mountExists && mountReadable && mountWritable;
 
-  const mountTooltip = health
-    ? `${health.music_dir} — ${
+  const mountTooltip = mountKnown
+    ? `${mountPath} — ${
         mountOk
           ? "read/write ready"
-          : !health.music_dir_exists
+          : !mountExists
             ? "directory missing"
-            : !health.music_dir_writable
+            : !mountWritable
               ? "read-only mount"
               : "unreadable"
       }`
     : "Checking container health...";
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border-subtle bg-surface px-4">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-surface px-4">
       <div className="flex items-center gap-3 min-w-0">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-strong bg-surface-elevated text-accent">
           <Disc3 className="h-4.5 w-4.5" />
@@ -79,10 +102,36 @@ export function Header({
           <h1 className="text-sm font-semibold tracking-tight text-ink-primary">
             M<sup className="text-[10px] font-bold text-accent ml-0.5">4</sup>
           </h1>
-          <span className="hidden sm:inline text-xs text-ink-muted truncate">
-            Modern Music Metadata Manager
-          </span>
+          {libraries.length <= 1 && (
+            <span className="hidden sm:inline text-xs text-ink-muted truncate">
+              Modern Music Metadata Manager
+            </span>
+          )}
         </div>
+
+        {libraries.length > 1 && activeLibrary && (
+          <div className="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-canvas px-2 h-8">
+            <Library className="h-3.5 w-3.5 shrink-0 text-accent" />
+            <select
+              id="library-switcher"
+              value={activeLibrary.id}
+              onChange={(e) => onSelectLibrary(e.target.value)}
+              aria-label="Select music library"
+              title={`Active library: ${activeLibrary.name} (${activeLibrary.path})`}
+              className="bg-transparent text-xs font-medium text-ink-primary focus:outline-none cursor-pointer pr-1 max-w-[160px]"
+            >
+              {libraries.map((lib) => (
+                <option
+                  key={lib.id}
+                  value={lib.id}
+                  className="bg-surface text-ink-primary"
+                >
+                  {lib.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <div className="relative flex-1 max-w-md">
@@ -168,7 +217,7 @@ export function Header({
           onClick={onRescan}
           disabled={scanning}
           className="m4-btn-secondary h-8 px-2.5 text-xs"
-          title="Rescan /music directory"
+          title={`Rescan ${mountPath}`}
         >
           <RefreshCw className={`h-3.5 w-3.5 ${scanning ? "animate-spin" : ""}`} />
           <span className="hidden sm:inline">{scanning ? "Scanning" : "Rescan"}</span>
@@ -181,16 +230,25 @@ export function Header({
         >
           <span
             className={`h-2 w-2 rounded-full ${
-              health === null
-                ? "bg-ink-muted"
-                : mountOk
-                  ? "bg-ok"
-                  : "bg-danger"
+              !mountKnown ? "bg-ink-muted" : mountOk ? "bg-ok" : "bg-danger"
             }`}
           />
           <HardDrive className="h-3.5 w-3.5 text-ink-muted" />
           <span className="font-mono text-[11px]">{trackCount}</span>
         </div>
+
+        {authStatus?.enabled && authStatus.authenticated && (
+          <button
+            id="logout-btn"
+            type="button"
+            onClick={onLogout}
+            className="m4-btn-secondary h-8 px-2 text-xs"
+            title={`Sign out (${authStatus.username ?? "user"})`}
+            aria-label="Sign out"
+          >
+            <LogOut className="h-3.5 w-3.5 text-ink-secondary" />
+          </button>
+        )}
       </div>
     </header>
   );

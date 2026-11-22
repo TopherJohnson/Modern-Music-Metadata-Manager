@@ -230,17 +230,18 @@ def scan_library(
     db: Database,
     *,
     force_rescan: bool = False,
+    library_id: str = "default",
 ) -> list[TrackMetadata]:
     """Scan `music_dir` and return metadata for all supported audio tracks.
 
-    Uses the SQLite cache in `/config/m4.db` keyed by `(path, mtime, file_size)` so
+    Uses the SQLite cache in `/config/m4.db` keyed by `(library_id, path, mtime, file_size)` so
     subsequent requests stay fast even on large libraries.
     """
     if not music_dir.exists() or not music_dir.is_dir():
         return []
 
     root = music_dir.resolve()
-    cached = {} if force_rescan else db.get_cached_tracks()
+    cached = {} if force_rescan else db.get_cached_tracks(library_id=library_id)
 
     discovered_paths: set[str] = set()
     tracks: list[TrackMetadata] = []
@@ -287,9 +288,9 @@ def scan_library(
 
     stale_paths = [p for p in cached.keys() if p not in discovered_paths]
     if to_upsert:
-        db.upsert_tracks(to_upsert)
+        db.upsert_tracks(to_upsert, library_id=library_id)
     if stale_paths:
-        db.remove_paths(stale_paths)
+        db.remove_paths(stale_paths, library_id=library_id)
 
     return tracks
 

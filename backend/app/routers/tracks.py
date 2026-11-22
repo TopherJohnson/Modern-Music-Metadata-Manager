@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 
@@ -16,6 +17,7 @@ from app.models import (
     TrackUpdateRequest,
     TrackUpdateResponse,
 )
+from app.routers._deps import resolve_library
 from app.services.navidrome import trigger_navidrome_scan
 from app.services.tags import (
     EDITABLE_FIELDS,
@@ -48,7 +50,7 @@ def _raise_http_for_tag_error(exc: Exception) -> None:
     if isinstance(exc, PermissionError):
         raise HTTPException(
             status_code=403,
-            detail="Permission denied writing audio file. Verify PUID/PGID and /music mount permissions.",
+            detail="Permission denied writing audio file. Verify PUID/PGID and music mount permissions.",
         ) from exc
     if isinstance(exc, TagServiceError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -58,28 +60,28 @@ def _raise_http_for_tag_error(exc: Exception) -> None:
 @router.get("/track", response_model=TrackMetadata)
 async def get_track(
     request: Request,
-    path: str = Query(..., description="Relative POSIX path of the track inside /music"),
+    path: str = Query(..., description="Relative POSIX path of the track inside the active library"),
 ) -> TrackMetadata:
     """Read live metadata for a single audio track directly from disk."""
-    settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
     try:
-        track = read_track_metadata(settings.music_dir, path)
+        track = read_track_metadata(lib.path, path)
     except Exception as exc:
         _raise_http_for_tag_error(exc)
-    db.upsert_tracks([track])
+    db.upsert_tracks([track], library_id=lib.id)
     return track
 
 
 @router.get("/track/raw", response_model=RawTagsResponse)
 async def get_track_raw_tags(
     request: Request,
-    path: str = Query(..., description="Relative POSIX path of the track inside /music"),
+    path: str = Query(..., description="Relative POSIX path of the track inside the active library"),
 ) -> RawTagsResponse:
     """Return all raw tag frames/keys directly from disk for inspecting hidden Navidrome grouping tags."""
-    settings = request.app.state.settings
+    lib = resolve_library(request)
     try:
-        return read_raw_tags(settings.music_dir, path)
+        return read_raw_tags(lib.path, path)
     except Exception as exc:
         _raise_http_for_tag_error(exc)
 
@@ -92,6 +94,7 @@ async def put_track(
     """Write updated metadata tags directly to an audio file on disk."""
     settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     updates = {
         field: getattr(payload, field)
@@ -101,17 +104,18 @@ async def put_track(
 
     try:
         if updates:
-            before, after = write_track_metadata(settings.music_dir, payload.path, updates)
-            db.upsert_tracks([after])
+            before, after = write_track_metadata(lib.path, payload.path, updates)
+            db.upsert_tracks([after], library_id=lib.id)
             db.record_audit(
                 path=after.path,
                 action="update_track",
                 before_tags=_tag_snapshot(before),
                 after_tags=_tag_snapshot(after),
+                library_id=lib.id,
             )
         else:
-            after = read_track_metadata(settings.music_dir, payload.path)
-            db.upsert_tracks([after])
+            after = read_track_metadata(lib.path, payload.path)
+            db.upsert_tracks([after], library_id=lib.id)
     except Exception as exc:
         _raise_http_for_tag_error(exc)
 
@@ -129,6 +133,7 @@ async def put_tracks_bulk(
     """Apply shared tag edits across multiple tracks (e.g. album-level bulk update)."""
     settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     updates = {
         field: getattr(payload, field)
@@ -136,27 +141,32 @@ async def put_tracks_bulk(
         if field in payload.model_fields_set
     }
 
+    target_paths = list(dict.fromkeys(payload.paths))
+    batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
+
     updated: list[TrackMetadata] = []
     errors: list[BulkUpdateError] = []
 
-    for rel_path in payload.paths:
+    for rel_path in target_paths:
         try:
             if updates:
-                before, after = write_track_metadata(settings.music_dir, rel_path, updates)
+                before, after = write_track_metadata(lib.path, rel_path, updates)
                 db.record_audit(
                     path=after.path,
                     action="bulk_update",
                     before_tags=_tag_snapshot(before),
                     after_tags=_tag_snapshot(after),
+                    library_id=lib.id,
+                    batch_id=batch_id,
                 )
             else:
-                after = read_track_metadata(settings.music_dir, rel_path)
+                after = read_track_metadata(lib.path, rel_path)
             updated.append(after)
         except Exception as exc:
             errors.append(BulkUpdateError(path=rel_path, error=str(exc)))
 
     if updated:
-        db.upsert_tracks(updated)
+        db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
         settings,
@@ -172,12 +182,12 @@ async def put_tracks_bulk(
 @router.get("/track/artwork")
 async def get_track_artwork(
     request: Request,
-    path: str = Query(..., description="Relative POSIX path of the track inside /music"),
+    path: str = Query(..., description="Relative POSIX path of the track inside the active library"),
 ) -> Response:
     """Return the embedded front cover image for a track."""
-    settings = request.app.state.settings
+    lib = resolve_library(request)
     try:
-        artwork = read_track_artwork(settings.music_dir, path)
+        artwork = read_track_artwork(lib.path, path)
     except Exception as exc:
         _raise_http_for_tag_error(exc)
 
@@ -200,9 +210,10 @@ async def copy_track_artwork(
     """Copy an existing track's embedded cover artwork onto one or more target tracks."""
     settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     try:
-        artwork = read_track_artwork(settings.music_dir, payload.source_path)
+        artwork = read_track_artwork(lib.path, payload.source_path)
     except Exception as exc:
         _raise_http_for_tag_error(exc)
 
@@ -214,6 +225,7 @@ async def copy_track_artwork(
 
     image_bytes, mime_type = artwork
     target_paths = list(dict.fromkeys(payload.target_paths))
+    batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
 
     updated: list[TrackMetadata] = []
     errors: list[BulkUpdateError] = []
@@ -221,7 +233,7 @@ async def copy_track_artwork(
     for rel_path in target_paths:
         try:
             after = write_track_artwork(
-                settings.music_dir,
+                lib.path,
                 rel_path,
                 image_bytes,
                 mime_type=mime_type,
@@ -234,13 +246,15 @@ async def copy_track_artwork(
                     "source_path": payload.source_path,
                     "artwork_hash": after.artwork_hash,
                 },
+                library_id=lib.id,
+                batch_id=batch_id,
             )
             updated.append(after)
         except Exception as exc:
             errors.append(BulkUpdateError(path=rel_path, error=str(exc)))
 
     if updated:
-        db.upsert_tracks(updated)
+        db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
         settings, requested=payload.trigger_navidrome_scan and bool(updated)
@@ -263,6 +277,7 @@ async def put_track_artwork(
     """Embed or replace cover art on a single track or a batch of tracks."""
     settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     target_paths: list[str] = []
     if paths:
@@ -293,13 +308,14 @@ async def put_track_artwork(
             detail=f"Unsupported image type '{content_type}'. Use JPEG or PNG.",
         )
 
+    batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
     updated: list[TrackMetadata] = []
     errors: list[BulkUpdateError] = []
 
     for rel_path in target_paths:
         try:
             after = write_track_artwork(
-                settings.music_dir,
+                lib.path,
                 rel_path,
                 image_bytes,
                 mime_type=content_type or None,
@@ -312,13 +328,15 @@ async def put_track_artwork(
                     "artwork_mime": after.artwork_mime,
                     "artwork_hash": after.artwork_hash,
                 },
+                library_id=lib.id,
+                batch_id=batch_id,
             )
             updated.append(after)
         except Exception as exc:
             errors.append(BulkUpdateError(path=rel_path, error=str(exc)))
 
     if updated:
-        db.upsert_tracks(updated)
+        db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
         settings, requested=trigger_navidrome_scan_flag and bool(updated)
@@ -333,21 +351,23 @@ async def put_track_artwork(
 @router.delete("/track/artwork", response_model=TrackUpdateResponse)
 async def remove_track_artwork(
     request: Request,
-    path: str = Query(..., description="Relative POSIX path of the track inside /music"),
+    path: str = Query(..., description="Relative POSIX path of the track inside the active library"),
     trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
 ) -> TrackUpdateResponse:
     """Remove embedded cover artwork from an audio file."""
     settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     try:
-        after = delete_track_artwork(settings.music_dir, path)
-        db.upsert_tracks([after])
+        after = delete_track_artwork(lib.path, path)
+        db.upsert_tracks([after], library_id=lib.id)
         db.record_audit(
             path=after.path,
             action="delete_artwork",
             before_tags={},
             after_tags={"has_artwork": "false"},
+            library_id=lib.id,
         )
     except Exception as exc:
         _raise_http_for_tag_error(exc)

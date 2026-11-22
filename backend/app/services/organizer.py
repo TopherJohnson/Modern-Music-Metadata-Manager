@@ -451,6 +451,7 @@ def apply_organize_plan(
     settings: OrganizeSettings,
     *,
     filter_paths: list[str] | None = None,
+    library_id: str = "default",
 ) -> tuple[list[OrganizeMoveResult], list[OrganizeMoveResult], int, list[BulkUpdateError], int]:
     """Execute planned audio & sidecar moves safely on disk, updating SQLite cache and audit history."""
     root = music_dir.resolve()
@@ -459,6 +460,8 @@ def apply_organize_plan(
     )
 
     move_items = [i for i in plan.items if i.status == "move"]
+    batch_id = uuid.uuid4().hex[:12] if len(move_items) > 1 else None
+
     sidecars_by_track: dict[str, list[OrganizeMoveResult]] = {}
     if settings.move_sidecars and move_items:
         _, sidecars_by_track = _plan_sidecar_moves(root, move_items)
@@ -532,6 +535,8 @@ def apply_organize_plan(
                 action="move_track",
                 before_tags={"path": src_rel},
                 after_tags=after_audit,
+                library_id=library_id,
+                batch_id=batch_id,
             )
 
             if old_parent != dest_abs.parent:
@@ -541,9 +546,9 @@ def apply_organize_plan(
             errors.append(BulkUpdateError(path=item.source_path, error=str(exc)))
 
     if removed_paths:
-        db.remove_paths(removed_paths)
+        db.remove_paths(removed_paths, library_id=library_id)
     if upserted_tracks:
-        db.upsert_tracks(upserted_tracks)
+        db.upsert_tracks(upserted_tracks, library_id=library_id)
 
     removed_empty_dirs = 0
     if settings.cleanup_empty_dirs and candidate_empty_dirs:
@@ -559,6 +564,9 @@ def undo_track_move(
     music_dir: Path,
     db: Database,
     entry: AuditEntry,
+    *,
+    library_id: str = "default",
+    batch_id: str | None = None,
 ) -> tuple[TrackMetadata, int]:
     """Revert a `move_track` audit entry, moving the audio file and any recorded sidecars back."""
     root = music_dir.resolve()
@@ -600,14 +608,16 @@ def undo_track_move(
                     logger.warning("Could not restore sidecar %s: %s", sc_curr, exc)
 
     refreshed = read_track_metadata(root, restored_rel)
-    db.remove_paths([src_rel])
-    db.upsert_tracks([refreshed])
+    db.remove_paths([src_rel], library_id=library_id)
+    db.upsert_tracks([refreshed], library_id=library_id)
     db.mark_audit_undone(entry.id)
     db.record_audit(
         path=restored_rel,
         action="undo_move",
         before_tags={"path": src_rel},
         after_tags={"path": restored_rel},
+        library_id=library_id,
+        batch_id=batch_id,
     )
 
     if old_parent != dest_abs.parent:

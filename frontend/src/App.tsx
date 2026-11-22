@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import {
   applyMusicBrainzRelease,
   applyMusicBrainzTrack,
   applyOrganize,
   copyArtwork,
   deleteArtwork,
+  getAuthStatus,
   getHealth,
+  getLibraries,
   getLibrary,
   getOrganizeSettings,
   getTrack,
+  logout,
   saveOrganizeSettings,
+  setActiveLibraryId as setApiLibraryId,
+  setUnauthorizedHandler,
   triggerLibraryScan,
   triggerNavidromeScan,
+  undoHistoryBatch,
   undoHistoryEntry,
   updateTrack,
   updateTracksBulk,
@@ -19,6 +26,7 @@ import {
 } from "./api/client";
 import { Header } from "./components/Header";
 import { HistoryDrawer } from "./components/HistoryDrawer";
+import { LoginScreen } from "./components/LoginScreen";
 import { MetadataEditor } from "./components/MetadataEditor";
 import {
   MusicBrainzModal,
@@ -33,7 +41,9 @@ import type {
   AlbumGroup,
   ArtistGroup,
   AuditEntry,
+  AuthStatusResponse,
   HealthResponse,
+  LibraryInfo,
   LibraryResponse,
   MusicBrainzApplyPayload,
   MusicBrainzApplyTrackPayload,
@@ -42,6 +52,8 @@ import type {
   TrackMetadata,
   TrackTags,
 } from "./types/music";
+
+const LIBRARY_STORAGE_KEY = "m4_active_library";
 
 const DEFAULT_ORGANIZE_SETTINGS: OrganizeSettings = {
   enabled: false,
@@ -76,6 +88,10 @@ function formatNavidromeNote(sync: NavidromeSyncResult): string | undefined {
 }
 
 export function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
+  const [libraries, setLibraries] = useState<LibraryInfo[]>([]);
+  const [activeLibraryId, setActiveLibraryId] = useState<string | null>(null);
+
   const [library, setLibrary] = useState<LibraryResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [query, setQuery] = useState("");
@@ -127,6 +143,7 @@ export function App() {
   });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [undoingId, setUndoingId] = useState<number | null>(null);
+  const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -143,6 +160,21 @@ export function App() {
     []
   );
 
+  // Check authentication status on startup & register global 401 handler
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthStatus((prev) =>
+        prev?.enabled ? { enabled: true, authenticated: false, username: null } : prev
+      );
+    });
+    void getAuthStatus()
+      .then((status) => setAuthStatus(status))
+      .catch(() => {
+        setAuthStatus({ enabled: false, authenticated: true, username: null });
+      });
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
   // Debounce search query
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -157,6 +189,16 @@ export function App() {
       setHealth(data);
     } catch {
       setHealth(null);
+    }
+  }, []);
+
+  const refreshLibraries = useCallback(async () => {
+    try {
+      const libs = await getLibraries();
+      setLibraries(libs);
+      return libs;
+    } catch {
+      return [];
     }
   }, []);
 
@@ -178,18 +220,80 @@ export function App() {
     [showToast]
   );
 
+  const isAuthenticated = authStatus?.authenticated ?? false;
+
+  // Initialize libraries & health once authenticated
   useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
     void refreshHealth();
+    void refreshLibraries().then((libs) => {
+      if (cancelled) return;
+      const savedId = window.localStorage.getItem(LIBRARY_STORAGE_KEY);
+      const matched = libs.find((l) => l.id === savedId) ?? libs[0] ?? null;
+      const nextId = matched?.id ?? "default";
+      setApiLibraryId(nextId);
+      setActiveLibraryId(nextId);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, refreshHealth, refreshLibraries]);
+
+  // Load organize settings whenever active library changes
+  useEffect(() => {
+    if (!isAuthenticated || !activeLibraryId) return;
+    setApiLibraryId(activeLibraryId);
     void getOrganizeSettings()
       .then((s) => setOrganizeSettings(s))
       .catch(() => {
-        // fallback to default settings
+        setOrganizeSettings(DEFAULT_ORGANIZE_SETTINGS);
       });
-  }, [refreshHealth]);
+  }, [isAuthenticated, activeLibraryId]);
 
+  // Fetch active library tracks whenever active library or search query changes
   useEffect(() => {
+    if (!isAuthenticated || !activeLibraryId) return;
+    setApiLibraryId(activeLibraryId);
     void fetchLibrary(debouncedQuery);
-  }, [debouncedQuery, fetchLibrary]);
+  }, [isAuthenticated, activeLibraryId, debouncedQuery, fetchLibrary]);
+
+  const activeLibrary = useMemo<LibraryInfo | null>(() => {
+    if (!activeLibraryId) return libraries[0] ?? null;
+    return libraries.find((l) => l.id === activeLibraryId) ?? libraries[0] ?? null;
+  }, [libraries, activeLibraryId]);
+
+  const handleSelectLibrary = (nextId: string) => {
+    if (nextId === activeLibraryId) return;
+    window.localStorage.setItem(LIBRARY_STORAGE_KEY, nextId);
+    setApiLibraryId(nextId);
+    setActiveLibraryId(nextId);
+    setLibrary(null);
+    setSelectedAlbumId(null);
+    setSelectedTrackPath(null);
+    setLiveTrack(null);
+    setIsBulkMode(false);
+    setAlbumFilter("all");
+    setHistoryOpen(false);
+    setTrackMbTarget(null);
+    setMbModal((prev) => ({ ...prev, open: false }));
+    setOrganizeModal({ open: false, scopeLabel: null, scopePaths: null });
+    setArtworkRevision((r) => r + 1);
+  };
+
+  const handleLogout = async () => {
+    try {
+      const nextStatus = await logout();
+      setAuthStatus(nextStatus);
+      setLibrary(null);
+      setLibraries([]);
+      setActiveLibraryId(null);
+      setApiLibraryId(null);
+      setHistoryOpen(false);
+    } catch {
+      setAuthStatus({ enabled: true, authenticated: false, username: null });
+    }
+  };
 
   const artists = library?.artists ?? [];
 
@@ -232,7 +336,6 @@ export function App() {
   const handleSelectAlbum = (_artist: ArtistGroup, album: AlbumGroup) => {
     setSelectedAlbumId(album.id);
     setIsBulkMode(false);
-    // Keep track selection only if it belongs to this album
     if (selectedTrackPath && !album.tracks.some((t) => t.path === selectedTrackPath)) {
       setSelectedTrackPath(null);
       setLiveTrack(null);
@@ -263,7 +366,7 @@ export function App() {
       const data = await triggerLibraryScan();
       setLibrary(data);
       setArtworkRevision((r) => r + 1);
-      await refreshHealth();
+      await Promise.all([refreshHealth(), refreshLibraries()]);
       showToast(
         "success",
         "Library rescanned",
@@ -448,8 +551,7 @@ export function App() {
     mode: MusicBrainzModalMode,
     targetPaths: string[]
   ) => {
-    const albumTitle =
-      selectedAlbum?.title || activeTrack?.album || "";
+    const albumTitle = selectedAlbum?.title || activeTrack?.album || "";
     const artistName =
       selectedAlbum?.artist ||
       activeTrack?.album_artist ||
@@ -607,7 +709,7 @@ export function App() {
         "success",
         "Saved folder organization preferences",
         saved.enabled
-          ? "Drift notifications are active across your library."
+          ? "Drift notifications are active across this library."
           : "Drift notifications are turned off."
       );
     } catch (err) {
@@ -626,7 +728,6 @@ export function App() {
     setApplyingOrganize(true);
     try {
       const response = await applyOrganize(activeSettings, selectedPaths);
-      // Update selected track path if it moved
       if (selectedTrackPath) {
         const movedMatch = response.moved.find(
           (m) => m.source_path === selectedTrackPath
@@ -728,6 +829,72 @@ export function App() {
     }
   };
 
+  const handleUndoBatch = async (batchId: string, batchEntries: AuditEntry[]) => {
+    setUndoingBatchId(batchId);
+    try {
+      const res = await undoHistoryBatch(batchId);
+      // Clear stale selected track path if any reverted entry touched it
+      if (selectedTrackPath) {
+        const touched = batchEntries.find(
+          (e) => e.path === selectedTrackPath || e.after_tags.path === selectedTrackPath
+        );
+        if (touched) {
+          const origPath =
+            touched.action === "move_track" && typeof touched.before_tags.path === "string"
+              ? touched.before_tags.path
+              : selectedTrackPath;
+          setSelectedTrackPath(origPath);
+          setLiveTrack(null);
+        }
+      }
+      await fetchLibrary(debouncedQuery, { silent: true });
+      const details = [
+        res.restored_sidecars > 0
+          ? `Restored ${res.restored_sidecars} sidecar ${
+              res.restored_sidecars === 1 ? "file" : "files"
+            }.`
+          : null,
+        formatNavidromeNote(res.navidrome_sync),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (res.errors.length > 0) {
+        showToast(
+          "error",
+          `Reverted ${res.undone_count} file(s), ${res.errors.length} failed`,
+          res.errors[0].error
+        );
+      } else {
+        showToast(
+          "success",
+          `Reverted ${res.undone_count} ${res.undone_count === 1 ? "file" : "files"}`,
+          details || undefined
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Batch undo failed";
+      showToast("error", "Could not undo batch", msg);
+    } finally {
+      setUndoingBatchId(null);
+    }
+  };
+
+  if (authStatus === null) {
+    return (
+      <div className="flex h-full min-h-screen items-center justify-center bg-canvas text-xs text-ink-secondary">
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
+          <span>Starting M⁴...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus.enabled && !authStatus.authenticated) {
+    return <LoginScreen onLoggedIn={(status) => setAuthStatus(status)} />;
+  }
+
   return (
     <div className="flex h-full flex-col bg-canvas text-ink-primary">
       <Header
@@ -741,7 +908,17 @@ export function App() {
         onOpenHistory={() => setHistoryOpen(true)}
         structureDriftCount={structureDriftCount}
         health={health}
-        trackCount={library?.stats.track_count ?? health?.cached_tracks ?? 0}
+        libraries={libraries}
+        activeLibrary={activeLibrary}
+        onSelectLibrary={handleSelectLibrary}
+        authStatus={authStatus}
+        onLogout={handleLogout}
+        trackCount={
+          library?.stats.track_count ??
+          activeLibrary?.cached_tracks ??
+          health?.cached_tracks ??
+          0
+        }
       />
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -762,7 +939,7 @@ export function App() {
           organizeEnabled={organizeSettings.enabled}
           artworkRevision={artworkRevision}
           loading={loading}
-          musicDir={health?.music_dir ?? "/music"}
+          musicDir={activeLibrary?.path ?? health?.music_dir ?? "/music"}
           onSelectAlbum={handleSelectAlbum}
           onBackToAll={handleSelectAll}
           onSelectTrack={handleSelectTrack}
@@ -827,8 +1004,11 @@ export function App() {
       <HistoryDrawer
         open={historyOpen}
         undoingId={undoingId}
+        undoingBatchId={undoingBatchId}
+        activeLibraryName={libraries.length > 1 ? activeLibrary?.name : undefined}
         onClose={() => setHistoryOpen(false)}
         onUndo={handleUndoHistory}
+        onUndoBatch={handleUndoBatch}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />

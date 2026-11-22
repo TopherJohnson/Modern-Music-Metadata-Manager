@@ -11,6 +11,7 @@ from app.models import (
     OrganizePreviewResponse,
     OrganizeSettings,
 )
+from app.routers._deps import resolve_library
 from app.services.navidrome import trigger_navidrome_scan
 from app.services.organizer import (
     VALID_TEMPLATES,
@@ -24,9 +25,10 @@ router = APIRouter(prefix="/api", tags=["organize"])
 
 @router.get("/settings/organize", response_model=OrganizeSettings)
 async def get_organize_settings(request: Request) -> OrganizeSettings:
-    """Return persisted library folder organization preferences."""
+    """Return persisted library folder organization preferences for the active library."""
     db = request.app.state.db
-    return db.get_organize_settings()
+    lib = resolve_library(request)
+    return db.get_organize_settings(library_id=lib.id)
 
 
 @router.put("/settings/organize", response_model=OrganizeSettings)
@@ -34,14 +36,15 @@ async def put_organize_settings(
     request: Request,
     payload: OrganizeSettings,
 ) -> OrganizeSettings:
-    """Save library folder organization preferences into /config/m4.db."""
+    """Save library folder organization preferences for the active library into /config/m4.db."""
     if payload.template not in VALID_TEMPLATES:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid template '{payload.template}'. Valid options: {', '.join(sorted(VALID_TEMPLATES))}.",
         )
     db = request.app.state.db
-    return db.save_organize_settings(payload)
+    lib = resolve_library(request)
+    return db.save_organize_settings(payload, library_id=lib.id)
 
 
 @router.post("/organize/preview", response_model=OrganizePreviewResponse)
@@ -49,12 +52,14 @@ async def post_organize_preview(
     request: Request,
     payload: OrganizePreviewRequest | None = None,
 ) -> OrganizePreviewResponse:
-    """Generate a dry-run reorganization preview for the library or a subset of tracks."""
-    app_settings = request.app.state.settings
+    """Generate a dry-run reorganization preview for the active library or a subset of tracks."""
     db = request.app.state.db
+    lib = resolve_library(request)
 
     org_settings = (
-        payload.settings if (payload and payload.settings is not None) else db.get_organize_settings()
+        payload.settings
+        if (payload and payload.settings is not None)
+        else db.get_organize_settings(library_id=lib.id)
     )
     if org_settings.template not in VALID_TEMPLATES:
         raise HTTPException(
@@ -62,9 +67,9 @@ async def post_organize_preview(
             detail=f"Invalid template '{org_settings.template}'.",
         )
 
-    tracks = scan_library(app_settings.music_dir, db)
+    tracks = scan_library(lib.path, db, library_id=lib.id)
     return build_organize_preview(
-        app_settings.music_dir,
+        lib.path,
         tracks,
         org_settings,
         filter_paths=payload.paths if payload else None,
@@ -79,9 +84,12 @@ async def post_organize_apply(
     """Execute library folder reorganization moves on disk and optionally trigger a Navidrome scan."""
     app_settings = request.app.state.settings
     db = request.app.state.db
+    lib = resolve_library(request)
 
     org_settings = (
-        payload.settings if (payload and payload.settings is not None) else db.get_organize_settings()
+        payload.settings
+        if (payload and payload.settings is not None)
+        else db.get_organize_settings(library_id=lib.id)
     )
     if org_settings.template not in VALID_TEMPLATES:
         raise HTTPException(
@@ -89,13 +97,14 @@ async def post_organize_apply(
             detail=f"Invalid template '{org_settings.template}'.",
         )
 
-    tracks = scan_library(app_settings.music_dir, db)
+    tracks = scan_library(lib.path, db, library_id=lib.id)
     moved, moved_sidecars, skipped, errors, removed_empty_dirs = apply_organize_plan(
-        app_settings.music_dir,
+        lib.path,
         db,
         tracks,
         org_settings,
         filter_paths=payload.paths if payload else None,
+        library_id=lib.id,
     )
 
     should_scan = (payload.trigger_navidrome_scan if payload else True) and bool(moved)

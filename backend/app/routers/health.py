@@ -1,4 +1,4 @@
-"""Health check endpoint reporting container and mount readiness."""
+"""Health check and configured music libraries endpoints."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 
 from app import __version__
-from app.models import HealthResponse
+from app.models import HealthResponse, LibraryInfo
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -38,8 +38,9 @@ async def get_health(request: Request) -> HealthResponse:
     settings = request.app.state.settings
     db = request.app.state.db
 
+    default_lib = settings.default_library
     music_exists, music_readable, music_writable = _check_dir_permissions(
-        settings.music_dir
+        default_lib.path
     )
     _, _, config_writable = _check_dir_permissions(settings.config_dir)
 
@@ -49,7 +50,7 @@ async def get_health(request: Request) -> HealthResponse:
     return HealthResponse(
         status=status,
         version=__version__,
-        music_dir=str(settings.music_dir),
+        music_dir=str(default_lib.path),
         music_dir_exists=music_exists,
         music_dir_readable=music_readable,
         music_dir_writable=music_writable,
@@ -57,4 +58,29 @@ async def get_health(request: Request) -> HealthResponse:
         config_dir_writable=config_writable,
         navidrome_configured=settings.navidrome_configured,
         cached_tracks=db.count_cached_tracks(),
+        auth_enabled=settings.auth_enabled,
+        libraries_count=len(settings.libraries),
     )
+
+
+@router.get("/libraries", response_model=list[LibraryInfo])
+async def get_libraries(request: Request) -> list[LibraryInfo]:
+    """Return all configured music libraries with mount readiness and cached track counts."""
+    settings = request.app.state.settings
+    db = request.app.state.db
+
+    result: list[LibraryInfo] = []
+    for lib in settings.libraries:
+        exists, readable, writable = _check_dir_permissions(lib.path)
+        result.append(
+            LibraryInfo(
+                id=lib.id,
+                name=lib.name,
+                path=str(lib.path),
+                exists=exists,
+                readable=readable,
+                writable=writable,
+                cached_tracks=db.count_cached_tracks(library_id=lib.id),
+            )
+        )
+    return result

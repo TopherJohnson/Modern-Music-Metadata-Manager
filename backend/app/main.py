@@ -6,15 +6,25 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.config import Settings, load_settings
 from app.database import Database
-from app.routers import health, library, musicbrainz, organize, tracks
+from app.routers import auth, health, library, musicbrainz, organize, tracks
+from app.services.auth import authenticate_request, load_or_create_session_secret
+
+_AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/health",
+        "/api/auth/status",
+        "/api/auth/login",
+        "/api/auth/logout",
+    }
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -39,6 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         app.state.settings = active_settings
         app.state.db = db
+        app.state.session_secret = load_or_create_session_secret(active_settings)
         yield
 
     app = FastAPI(
@@ -48,7 +59,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Allow local Vite dev server during development
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        if (
+            active_settings.auth_enabled
+            and request.method != "OPTIONS"
+            and (request.url.path == "/api" or request.url.path.startswith("/api/"))
+            and request.url.path not in _AUTH_EXEMPT_PATHS
+        ):
+            user = authenticate_request(request)
+            if user is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required."},
+                    headers={"WWW-Authenticate": 'Basic realm="M4"'},
+                )
+        return await call_next(request)
+
+    # Allow local Vite dev server during development (registered after auth_middleware so CORS wraps 401s too)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -62,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(library.router)
     app.include_router(tracks.router)

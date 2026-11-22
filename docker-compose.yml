@@ -9,8 +9,11 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      # Replace `/path/to/music` with the exact host music directory mounted into Navidrome (read-write)
+      # Replace `/path/to/music` with your host music directory (read-write)
       - /path/to/music:/music
+      # Multi-library example: mount multiple directories and set M4_LIBRARIES below
+      # - /path/to/main-music:/music/main
+      # - /path/to/soundtracks:/music/soundtracks
       # Persistent lightweight SQLite cache, settings, and edit audit history
       - ./config:/config
     environment:
@@ -18,6 +21,11 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=America/Chicago
+      # Optional: manage multiple libraries in separate directories
+      # - M4_LIBRARIES=Main:/music/main,Soundtracks:/music/soundtracks
+      # Optional: enable built-in Basic Auth / login screen (disabled by default)
+      # - M4_AUTH_USER=admin
+      # - M4_AUTH_PASS=change-me
       # Optional: trigger a Navidrome Subsonic `startScan` automatically after saving tags
       # - NAVIDROME_URL=http://navidrome:4533
       # - NAVIDROME_USER=admin

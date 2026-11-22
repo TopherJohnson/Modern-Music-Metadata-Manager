@@ -676,6 +676,237 @@ def test_history_undo_tags_and_sidecar_moves(client: TestClient) -> None:
     assert not (music_dir / "Geogaddi").exists()
 
 
+def test_batch_grouped_history_and_one_click_batch_undo(client: TestClient) -> None:
+    music_dir = client.app.state.settings.music_dir
+    paths = [
+        "Boards of Canada/Geogaddi/01 - Intro.mp3",
+        "Boards of Canada/Geogaddi/02 - Music Is Math.flac",
+    ]
+
+    # 1. Bulk tag edit creates grouped entries sharing one batch_id
+    bulk_res = client.put(
+        "/api/tracks/bulk",
+        json={"paths": paths, "genre": "IDM", "year": "2002"},
+    )
+    assert bulk_res.status_code == 200
+
+    history = client.get("/api/history").json()
+    bulk_entries = [e for e in history if e["action"] == "bulk_update"]
+    assert len(bulk_entries) == 2
+    tag_batch_id = bulk_entries[0]["batch_id"]
+    assert tag_batch_id is not None
+    assert all(e["batch_id"] == tag_batch_id for e in bulk_entries)
+
+    # One-click batch undo reverts both tracks at once
+    undo_batch_res = client.post(f"/api/history/batch/{tag_batch_id}/undo")
+    assert undo_batch_res.status_code == 200
+    body = undo_batch_res.json()
+    assert body["undone_count"] == 2
+    assert body["errors"] == []
+
+    # Verify original tags restored
+    mp3_after = client.get("/api/track", params={"path": paths[0]}).json()
+    flac_after = client.get("/api/track", params={"path": paths[1]}).json()
+    assert mp3_after["genre"] is None
+    assert flac_after["genre"] == "Electronic"
+
+    # Re-undoing the same batch returns 409
+    assert client.post(f"/api/history/batch/{tag_batch_id}/undo").status_code == 409
+
+    # 2. Multi-file organize move (+ sidecar) shares one batch_id and reverts in one click
+    album_dir = music_dir / "Boards of Canada" / "Geogaddi"
+    (album_dir / "01 - Intro.lrc").write_text("[00:01.00] lyrics\n", encoding="utf-8")
+    (album_dir / "cover.jpg").write_bytes(TINY_PNG)
+
+    client.put(
+        "/api/settings/organize",
+        json={
+            "enabled": True,
+            "template": "album_only",
+            "rename_files": True,
+            "compilation_folder": "Various Artists",
+            "cleanup_empty_dirs": True,
+            "skip_missing_metadata": True,
+            "move_sidecars": True,
+        },
+    )
+    apply_res = client.post("/api/organize/apply", json={})
+    assert apply_res.status_code == 200
+    assert len(apply_res.json()["moved"]) == 2
+    assert len(apply_res.json()["moved_sidecars"]) == 2
+
+    move_entries = [
+        e for e in client.get("/api/history").json() if e["action"] == "move_track"
+    ]
+    assert len(move_entries) == 2
+    move_batch_id = move_entries[0]["batch_id"]
+    assert move_batch_id is not None
+    assert all(e["batch_id"] == move_batch_id for e in move_entries)
+
+    # Single batch undo restores both audio files and both sidecars
+    undo_move_batch = client.post(f"/api/history/batch/{move_batch_id}/undo")
+    assert undo_move_batch.status_code == 200
+    undo_body = undo_move_batch.json()
+    assert undo_body["undone_count"] == 2
+    assert undo_body["restored_sidecars"] == 2
+    assert undo_body["errors"] == []
+
+    assert (album_dir / "01 - Intro.mp3").is_file()
+    assert (album_dir / "02 - Music Is Math.flac").is_file()
+    assert (album_dir / "01 - Intro.lrc").is_file()
+    assert (album_dir / "cover.jpg").is_file()
+    assert not (music_dir / "Geogaddi").exists()
+
+
+def test_multi_library_isolation_and_per_library_settings(tmp_path: Path) -> None:
+    from app.config import LibraryConfig
+
+    main_dir = tmp_path / "main"
+    ost_dir = tmp_path / "soundtracks"
+    config_dir = tmp_path / "config"
+    main_dir.mkdir()
+    ost_dir.mkdir()
+    config_dir.mkdir()
+
+    _create_minimal_mp3(main_dir / "Boards of Canada" / "Geogaddi" / "01 - Intro.mp3")
+    _create_minimal_flac(ost_dir / "Composer" / "Score" / "01 - Theme.flac")
+
+    settings = Settings(
+        music_dir=main_dir,
+        config_dir=config_dir,
+        static_dir=None,
+        navidrome_url=None,
+        navidrome_user=None,
+        navidrome_pass=None,
+        navidrome_auto_scan=False,
+        log_level="warning",
+        libraries=(
+            LibraryConfig(id="main", name="Main", path=main_dir),
+            LibraryConfig(id="soundtracks", name="Soundtracks", path=ost_dir),
+        ),
+    )
+
+    with TestClient(create_app(settings=settings)) as tc:
+        libs = tc.get("/api/libraries").json()
+        assert [l["id"] for l in libs] == ["main", "soundtracks"]
+        assert all(l["exists"] and l["writable"] for l in libs)
+
+        # Default library is main (1 MP3 track)
+        main_lib = tc.get("/api/library").json()
+        assert main_lib["stats"]["track_count"] == 1
+        assert main_lib["artists"][0]["albums"][0]["tracks"][0]["format"] == "MP3"
+
+        # Switching via X-M4-Library header returns soundtracks (1 FLAC track)
+        ost_lib = tc.get("/api/library", headers={"X-M4-Library": "soundtracks"}).json()
+        assert ost_lib["stats"]["track_count"] == 1
+        assert ost_lib["artists"][0]["albums"][0]["tracks"][0]["format"] == "FLAC"
+
+        # Unknown library returns 404
+        assert tc.get("/api/library", params={"library": "nonexistent"}).status_code == 404
+
+        # Organize settings are isolated per library
+        tc.put(
+            "/api/settings/organize",
+            headers={"X-M4-Library": "soundtracks"},
+            json={
+                "enabled": True,
+                "template": "album_only",
+                "rename_files": False,
+                "compilation_folder": "Various Artists",
+                "cleanup_empty_dirs": True,
+                "skip_missing_metadata": True,
+                "move_sidecars": True,
+            },
+        )
+        assert tc.get("/api/settings/organize", headers={"X-M4-Library": "main"}).json()["enabled"] is False
+        assert tc.get("/api/settings/organize", headers={"X-M4-Library": "soundtracks"}).json()["template"] == "album_only"
+
+        # Edits and audit history are isolated per library
+        tc.put(
+            "/api/track",
+            headers={"X-M4-Library": "soundtracks"},
+            json={"path": "Composer/Score/01 - Theme.flac", "title": "Opening Theme"},
+        )
+        assert len(tc.get("/api/history", headers={"X-M4-Library": "main"}).json()) == 0
+        ost_hist = tc.get("/api/history", headers={"X-M4-Library": "soundtracks"}).json()
+        assert len(ost_hist) == 1
+        assert ost_hist[0]["library_id"] == "soundtracks"
+
+
+def test_optional_basic_auth_cookie_and_header(tmp_path: Path) -> None:
+    import base64
+
+    music_dir = tmp_path / "music"
+    config_dir = tmp_path / "config"
+    music_dir.mkdir()
+    config_dir.mkdir()
+    _create_minimal_mp3(music_dir / "Boards of Canada" / "Geogaddi" / "01 - Intro.mp3")
+
+    settings = Settings(
+        music_dir=music_dir,
+        config_dir=config_dir,
+        static_dir=None,
+        navidrome_url=None,
+        navidrome_user=None,
+        navidrome_pass=None,
+        navidrome_auto_scan=False,
+        log_level="warning",
+        auth_user="admin",
+        auth_pass="s3cret-pass",
+    )
+
+    with TestClient(create_app(settings=settings)) as tc:
+        # /api/health and /api/auth/status remain accessible without credentials
+        health = tc.get("/api/health")
+        assert health.status_code == 200
+        assert health.json()["auth_enabled"] is True
+
+        status = tc.get("/api/auth/status").json()
+        assert status == {"enabled": True, "authenticated": False, "username": None}
+
+        # Protected API endpoints reject unauthenticated requests with 401
+        unauth = tc.get("/api/library")
+        assert unauth.status_code == 401
+        assert "Basic" in unauth.headers.get("www-authenticate", "")
+        assert tc.get("/api/libraries").status_code == 401
+
+        # HTTP Basic header works directly
+        basic_token = base64.b64encode(b"admin:s3cret-pass").decode("ascii")
+        basic_ok = tc.get(
+            "/api/library", headers={"Authorization": f"Basic {basic_token}"}
+        )
+        assert basic_ok.status_code == 200
+        assert basic_ok.json()["stats"]["track_count"] == 1
+
+        # Invalid login fails with 401
+        bad_login = tc.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "wrong"},
+        )
+        assert bad_login.status_code == 401
+
+        # Valid login sets HttpOnly cookie and grants access
+        good_login = tc.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "s3cret-pass"},
+        )
+        assert good_login.status_code == 200
+        assert good_login.json() == {
+            "enabled": True,
+            "authenticated": True,
+            "username": "admin",
+        }
+        assert tc.get("/api/auth/status").json()["authenticated"] is True
+        assert tc.get("/api/library").status_code == 200
+
+        # Logout clears cookie and revokes access
+        logout_res = tc.post("/api/auth/logout")
+        assert logout_res.status_code == 200
+        assert logout_res.json()["authenticated"] is False
+        assert tc.get("/api/library").status_code == 401
+
+
+
 
 
 
