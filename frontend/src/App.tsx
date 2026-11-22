@@ -79,6 +79,14 @@ import type {
 import type { MissingFieldKey, MissingScopeMode } from "./utils/missingFields";
 
 const LIBRARY_STORAGE_KEY = "m4_active_library";
+const SIDEBAR_WIDTH_STORAGE_KEY = "m4_sidebar_width";
+const INSPECTOR_WIDTH_STORAGE_KEY = "m4_inspector_width";
+const DEFAULT_SIDEBAR_WIDTH = 256;
+const MIN_SIDEBAR_WIDTH = 180;
+const MAX_SIDEBAR_WIDTH = 460;
+const DEFAULT_INSPECTOR_WIDTH = 400;
+const MIN_INSPECTOR_WIDTH = 300;
+const MAX_INSPECTOR_WIDTH = 620;
 
 const DEFAULT_ORGANIZE_SETTINGS: OrganizeSettings = {
   enabled: false,
@@ -141,9 +149,125 @@ export function App() {
   } | null>(null);
 
   const [library, setLibrary] = useState<LibraryResponse | null>(null);
+  const [fullArtists, setFullArtists] = useState<ArtistGroup[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+
+  // Resizable 3-pane widths (persisted in localStorage)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = Number.parseInt(
+        window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY) || "",
+        10
+      );
+      if (Number.isFinite(saved)) {
+        return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, saved));
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_SIDEBAR_WIDTH;
+  });
+  const [inspectorWidth, setInspectorWidth] = useState<number>(() => {
+    try {
+      const saved = Number.parseInt(
+        window.localStorage.getItem(INSPECTOR_WIDTH_STORAGE_KEY) || "",
+        10
+      );
+      if (Number.isFinite(saved)) {
+        return Math.max(
+          MIN_INSPECTOR_WIDTH,
+          Math.min(MAX_INSPECTOR_WIDTH, saved)
+        );
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_INSPECTOR_WIDTH;
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        SIDEBAR_WIDTH_STORAGE_KEY,
+        String(sidebarWidth)
+      );
+    } catch {
+      // ignore
+    }
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        INSPECTOR_WIDTH_STORAGE_KEY,
+        String(inspectorWidth)
+      );
+    } catch {
+      // ignore
+    }
+  }, [inspectorWidth]);
+
+  const startResizeSidebar = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = sidebarWidth;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      function onMouseMove(ev: MouseEvent) {
+        const delta = ev.clientX - startX;
+        const next = Math.max(
+          MIN_SIDEBAR_WIDTH,
+          Math.min(MAX_SIDEBAR_WIDTH, startWidth + delta)
+        );
+        setSidebarWidth(next);
+      }
+
+      function onMouseUp() {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+      }
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    },
+    [sidebarWidth]
+  );
+
+  const startResizeInspector = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = inspectorWidth;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+
+      function onMouseMove(ev: MouseEvent) {
+        const delta = startX - ev.clientX;
+        const next = Math.max(
+          MIN_INSPECTOR_WIDTH,
+          Math.min(MAX_INSPECTOR_WIDTH, startWidth + delta)
+        );
+        setInspectorWidth(next);
+      }
+
+      function onMouseUp() {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+      }
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    },
+    [inspectorWidth]
+  );
 
   const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
   const [selectedTrackPath, setSelectedTrackPath] = useState<string | null>(null);
@@ -196,7 +320,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [undoingId, setUndoingId] = useState<number | null>(null);
   const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<TrackMetadata | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<TrackMetadata[]>([]);
   const [deletingTrack, setDeletingTrack] = useState(false);
   const [mergeAlbumsTarget, setMergeAlbumsTarget] = useState<AlbumGroup[]>([]);
   const [moveTracksTarget, setMoveTracksTarget] = useState<{
@@ -244,14 +368,6 @@ export function App() {
       });
     return () => setUnauthorizedHandler(null);
   }, []);
-
-  // Debounce search query
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setDebouncedQuery(query);
-    }, 180);
-    return () => window.clearTimeout(timer);
-  }, [query]);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -306,6 +422,13 @@ export function App() {
       try {
         const data = await getLibrary(searchText);
         setLibrary(data);
+        if (!searchText.trim()) {
+          setFullArtists(data.artists);
+        } else {
+          void getLibrary("")
+            .then((full) => setFullArtists(full.artists))
+            .catch(() => {});
+        }
         if (workspaceMode === "staging" && !searchText.trim()) {
           setStagingStatus((prev) =>
             prev
@@ -404,6 +527,9 @@ export function App() {
 
   const resetViewSelection = () => {
     setLibrary(null);
+    setFullArtists([]);
+    setQuery("");
+    setDebouncedQuery("");
     setSelectedAlbumId(null);
     setSelectedTrackPath(null);
     setLiveTrack(null);
@@ -447,6 +573,7 @@ export function App() {
       const nextStatus = await logout();
       setAuthStatus(nextStatus);
       setLibrary(null);
+      setFullArtists([]);
       setLibraries([]);
       setActiveLibraryId(null);
       setApiLibraryId(null);
@@ -477,17 +604,23 @@ export function App() {
       const found = artist.albums.find((a) => a.id === selectedAlbumId);
       if (found) return found;
     }
+    for (const artist of fullArtists) {
+      const found = artist.albums.find((a) => a.id === selectedAlbumId);
+      if (found) return found;
+    }
     return null;
-  }, [artists, selectedAlbumId]);
+  }, [artists, fullArtists, selectedAlbumId]);
 
   const activeTrack = useMemo<TrackMetadata | null>(() => {
     if (isBulkMode || !selectedTrackPath) return null;
     if (liveTrack && liveTrack.path === selectedTrackPath) {
       return liveTrack;
     }
-    const found = findAlbumAndTrackByPath(artists, selectedTrackPath);
+    const found =
+      findAlbumAndTrackByPath(artists, selectedTrackPath) ??
+      findAlbumAndTrackByPath(fullArtists, selectedTrackPath);
     return found?.track ?? null;
-  }, [artists, isBulkMode, liveTrack, selectedTrackPath]);
+  }, [artists, fullArtists, isBulkMode, liveTrack, selectedTrackPath]);
 
   const handleSelectAll = () => {
     setSelectedAlbumId(null);
@@ -523,11 +656,57 @@ export function App() {
     setIsBulkMode(true);
   };
 
+  const handleSubmitGlobalSearch = (val: string) => {
+    const trimmed = val.trim();
+    setQuery(trimmed);
+    setDebouncedQuery(trimmed);
+    setSelectedAlbumId(null);
+    setIsBulkMode(false);
+  };
+
+  const handleClearGlobalSearch = () => {
+    setQuery("");
+    setDebouncedQuery("");
+  };
+
+  const handleQuickSelectArtist = (artist: ArtistGroup) => {
+    setQuery(artist.name);
+    setDebouncedQuery(artist.name);
+    setSelectedAlbumId(null);
+    setSelectedTrackPath(null);
+    setLiveTrack(null);
+    setIsBulkMode(false);
+  };
+
+  const handleQuickSelectAlbum = (artist: ArtistGroup, album: AlbumGroup) => {
+    setQuery("");
+    if (debouncedQuery) {
+      setDebouncedQuery("");
+    }
+    handleSelectAlbum(artist, album);
+  };
+
+  const handleQuickSelectTrack = (
+    artist: ArtistGroup,
+    album: AlbumGroup,
+    track: TrackMetadata
+  ) => {
+    setQuery("");
+    if (debouncedQuery) {
+      setDebouncedQuery("");
+    }
+    handleSelectAlbum(artist, album);
+    void handleSelectTrack(track);
+  };
+
   const handleRescan = async () => {
     setScanning(true);
     try {
       const data = await triggerLibraryScan();
       setLibrary(data);
+      setFullArtists(data.artists);
+      setDebouncedQuery("");
+      setQuery("");
       setArtworkRevision((r) => r + 1);
       await Promise.all([refreshHealth(), refreshLibraries()]);
       showToast(
@@ -1061,17 +1240,44 @@ export function App() {
   };
 
   const handleConfirmDeleteTrack = async (
-    track: TrackMetadata,
+    tracksToDelete: TrackMetadata[],
     options: { deleteSidecars: boolean; cleanupEmptyDirs: boolean }
   ) => {
+    if (tracksToDelete.length === 0) return;
     setDeletingTrack(true);
     try {
-      const res = await deleteTrack(track.path, options);
-      if (selectedTrackPath === track.path) {
-        setSelectedTrackPath(null);
-        setLiveTrack(null);
+      let deletedCount = 0;
+      let totalSidecars = 0;
+      let totalEmptyDirs = 0;
+      let lastSync: NavidromeSyncResult | null = null;
+      const errors: string[] = [];
+
+      for (let i = 0; i < tracksToDelete.length; i += 1) {
+        const track = tracksToDelete[i];
+        const isLast = i === tracksToDelete.length - 1;
+        try {
+          const res = await deleteTrack(track.path, {
+            ...options,
+            triggerNavidromeScan: isLast,
+          });
+          deletedCount += 1;
+          totalSidecars += res.deleted_sidecars.length;
+          totalEmptyDirs += res.removed_empty_dirs;
+          lastSync = res.navidrome_sync;
+          if (selectedTrackPath === track.path) {
+            setSelectedTrackPath(null);
+            setLiveTrack(null);
+          }
+        } catch (err) {
+          errors.push(
+            err instanceof Error
+              ? err.message
+              : `Could not delete ${track.filename}`
+          );
+        }
       }
-      setDeleteTarget(null);
+
+      setDeleteTargets([]);
       const updatedLib = await fetchLibrary(debouncedQuery, { silent: true });
       // If the currently viewed album now has 0 tracks left, return cleanly to All Albums
       if (updatedLib && selectedAlbumId) {
@@ -1084,29 +1290,41 @@ export function App() {
         }
       }
       const details = [
-        res.deleted_sidecars.length > 0
-          ? `Removed ${res.deleted_sidecars.length} sidecar ${
-              res.deleted_sidecars.length === 1 ? "file" : "files"
+        totalSidecars > 0
+          ? `Removed ${totalSidecars} sidecar ${
+              totalSidecars === 1 ? "file" : "files"
             }.`
           : null,
-        res.removed_empty_dirs > 0
-          ? `Removed ${res.removed_empty_dirs} empty ${
-              res.removed_empty_dirs === 1 ? "folder" : "folders"
+        totalEmptyDirs > 0
+          ? `Removed ${totalEmptyDirs} empty ${
+              totalEmptyDirs === 1 ? "folder" : "folders"
             }.`
           : null,
-        formatNavidromeNote(res.navidrome_sync),
+        lastSync ? formatNavidromeNote(lastSync) : null,
       ]
         .filter(Boolean)
         .join(" ");
 
-      showToast(
-        "success",
-        `Deleted "${track.title || track.filename}"`,
-        details || res.deleted_path
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Could not delete track";
-      showToast("error", "Delete failed", msg);
+      if (errors.length > 0) {
+        showToast(
+          "error",
+          `Deleted ${deletedCount} of ${tracksToDelete.length} file(s)`,
+          errors[0]
+        );
+      } else if (tracksToDelete.length === 1) {
+        const single = tracksToDelete[0];
+        showToast(
+          "success",
+          `Deleted "${single.title || single.filename}"`,
+          details || single.path
+        );
+      } else {
+        showToast(
+          "success",
+          `Deleted ${deletedCount} track files`,
+          details || undefined
+        );
+      }
     } finally {
       setDeletingTrack(false);
     }
@@ -1588,7 +1806,14 @@ export function App() {
         slskdSummary={slskdSummary}
         onOpenDownloads={() => setDownloadsDrawerOpen(true)}
         query={query}
+        appliedQuery={debouncedQuery}
         onQueryChange={setQuery}
+        onSubmitSearch={handleSubmitGlobalSearch}
+        onClearSearch={handleClearGlobalSearch}
+        allArtists={fullArtists.length > 0 ? fullArtists : artists}
+        onQuickSelectArtist={handleQuickSelectArtist}
+        onQuickSelectAlbum={handleQuickSelectAlbum}
+        onQuickSelectTrack={handleQuickSelectTrack}
         onRescan={handleRescan}
         scanning={scanning}
         onNavidromeSync={handleNavidromeSync}
@@ -1668,9 +1893,24 @@ export function App() {
           artists={artists}
           stats={library?.stats ?? null}
           selectedAlbumId={selectedAlbum?.id ?? null}
+          width={sidebarWidth}
           onSelectAll={handleSelectAll}
           onSelectAlbum={handleSelectAlbum}
         />
+
+        {/* Drag-Resizable Divider: Sidebar <-> Main Pane */}
+        <div
+          id="sidebar-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize artist sidebar"
+          title="Drag to resize sidebar (double-click to reset)"
+          onMouseDown={startResizeSidebar}
+          onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+          className="group relative z-20 -mx-0.5 w-1.5 shrink-0 cursor-col-resize select-none"
+        >
+          <div className="mx-auto h-full w-px bg-transparent transition-colors group-hover:bg-accent/70 group-active:bg-accent" />
+        </div>
 
         <TrackList
           artists={artists}
@@ -1712,7 +1952,8 @@ export function App() {
           }
           onQuickMoveMissingCandidate={handleMoveMissingCandidate}
           onIdentifyTrack={handleIdentifyTrack}
-          onDeleteTrack={(track) => setDeleteTarget(track)}
+          onDeleteTrack={(track) => setDeleteTargets([track])}
+          onDeleteTracks={(tracks) => setDeleteTargets(tracks)}
           onMergeAlbums={(albums) => setMergeAlbumsTarget(albums)}
           onIdentifyCombinedAlbums={handleIdentifyCombinedAlbums}
           onMoveTracksToAlbum={(tracks, sourceAlbumId) =>
@@ -1726,6 +1967,20 @@ export function App() {
           onRescan={handleRescan}
         />
 
+        {/* Drag-Resizable Divider: Main Pane <-> Metadata Inspector */}
+        <div
+          id="inspector-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize metadata inspector"
+          title="Drag to resize inspector (double-click to reset)"
+          onMouseDown={startResizeInspector}
+          onDoubleClick={() => setInspectorWidth(DEFAULT_INSPECTOR_WIDTH)}
+          className="hidden lg:block group relative z-20 -mx-0.5 w-1.5 shrink-0 cursor-col-resize select-none"
+        >
+          <div className="mx-auto h-full w-px bg-transparent transition-colors group-hover:bg-accent/70 group-active:bg-accent" />
+        </div>
+
         <MetadataEditor
           selectedTrack={activeTrack}
           activeAlbum={selectedAlbum}
@@ -1733,6 +1988,7 @@ export function App() {
           artworkRevision={artworkRevision}
           saving={saving}
           uploadingArtwork={uploadingArtwork}
+          width={inspectorWidth}
           onSaveTrack={handleSaveTrack}
           onSaveBulk={handleSaveBulk}
           onUploadArtwork={handleUploadArtwork}
@@ -1740,7 +1996,7 @@ export function App() {
           onDeleteArtwork={handleDeleteArtwork}
           onOpenMusicBrainz={handleOpenMusicBrainz}
           onIdentifyTrack={handleIdentifyTrack}
-          onDeleteTrack={(track) => setDeleteTarget(track)}
+          onDeleteTrack={(track) => setDeleteTargets([track])}
           onMoveTrackToAlbum={(track) =>
             setMoveTracksTarget({
               tracks: [track],
@@ -1800,9 +2056,9 @@ export function App() {
       />
 
       <DeleteTrackModal
-        track={deleteTarget}
+        tracks={deleteTargets}
         deleting={deletingTrack}
-        onClose={() => setDeleteTarget(null)}
+        onClose={() => setDeleteTargets([])}
         onConfirm={handleConfirmDeleteTrack}
       />
 

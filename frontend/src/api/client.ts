@@ -157,7 +157,11 @@ export function updateTrack(payload: TrackUpdatePayload): Promise<TrackUpdateRes
 
 export function deleteTrack(
   path: string,
-  options?: { deleteSidecars?: boolean; cleanupEmptyDirs?: boolean }
+  options?: {
+    deleteSidecars?: boolean;
+    cleanupEmptyDirs?: boolean;
+    triggerNavidromeScan?: boolean;
+  }
 ): Promise<TrackDeleteResponse> {
   const params = new URLSearchParams({ path });
   if (options?.deleteSidecars !== undefined) {
@@ -165,6 +169,9 @@ export function deleteTrack(
   }
   if (options?.cleanupEmptyDirs !== undefined) {
     params.set("cleanup_empty_dirs", String(options.cleanupEmptyDirs));
+  }
+  if (options?.triggerNavidromeScan !== undefined) {
+    params.set("trigger_navidrome_scan", String(options.triggerNavidromeScan));
   }
   return requestJson<TrackDeleteResponse>(`/api/track?${params.toString()}`, {
     method: "DELETE",

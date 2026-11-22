@@ -36,7 +36,7 @@ Prebuilt multi-arch images (`linux/amd64` and `linux/arm64`) are published autom
 docker compose pull && docker compose up -d
 ```
 
-*(Pin a specific release such as `ghcr.io/topherjohnson/modern-music-metadata-manager:0.5.0`, or uncomment the `build:` block in `docker-compose.yml` to build locally from source.)*
+*(Pin a specific release such as `ghcr.io/topherjohnson/modern-music-metadata-manager:0.5.1`, or uncomment the `build:` block in `docker-compose.yml` to build locally from source.)*
 
 3. Open the web UI at `http://localhost:3333` (or verify container health at `http://localhost:3333/api/health`).
 

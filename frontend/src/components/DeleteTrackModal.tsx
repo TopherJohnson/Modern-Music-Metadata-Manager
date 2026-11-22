@@ -4,17 +4,17 @@ import { formatDuration, formatFileSize } from "../api/client";
 import type { TrackMetadata } from "../types/music";
 
 interface DeleteTrackModalProps {
-  track: TrackMetadata | null;
+  tracks: TrackMetadata[];
   deleting: boolean;
   onClose: () => void;
   onConfirm: (
-    track: TrackMetadata,
+    tracks: TrackMetadata[],
     options: { deleteSidecars: boolean; cleanupEmptyDirs: boolean }
   ) => Promise<void>;
 }
 
 export function DeleteTrackModal({
-  track,
+  tracks,
   deleting,
   onClose,
   onConfirm,
@@ -22,13 +22,13 @@ export function DeleteTrackModal({
   const [cleanupExtras, setCleanupExtras] = useState(true);
 
   useEffect(() => {
-    if (track) {
+    if (tracks.length > 0) {
       setCleanupExtras(true);
     }
-  }, [track]);
+  }, [tracks]);
 
   useEffect(() => {
-    if (!track) return;
+    if (tracks.length === 0) return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape" && !deleting) {
         onClose();
@@ -36,9 +36,14 @@ export function DeleteTrackModal({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [track, deleting, onClose]);
+  }, [tracks, deleting, onClose]);
 
-  if (!track) return null;
+  if (tracks.length === 0) return null;
+
+  const isMulti = tracks.length > 1;
+  const single = tracks[0];
+  const totalSize = tracks.reduce((sum, t) => sum + (t.file_size || 0), 0);
+  const totalDuration = tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
 
   return (
     <div
@@ -63,10 +68,12 @@ export function DeleteTrackModal({
                 id="delete-track-modal-title"
                 className="text-sm font-semibold text-ink-primary"
               >
-                Delete Track File
+                {isMulti
+                  ? `Delete ${tracks.length} Track Files`
+                  : "Delete Track File"}
               </h2>
               <p className="text-xs text-ink-muted">
-                Permanently remove this audio file from disk
+                Permanently remove {isMulti ? "these audio files" : "this audio file"} from disk
               </p>
             </div>
           </div>
@@ -85,38 +92,75 @@ export function DeleteTrackModal({
 
         {/* Body */}
         <div className="space-y-4 px-5 py-4">
-          <div className="rounded-xl border border-border-subtle bg-canvas p-3.5 space-y-2">
-            <div className="flex items-start gap-2.5">
-              <FileAudio className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
-              <div className="min-w-0">
-                <p className="truncate text-xs font-semibold text-ink-primary">
-                  {track.title || track.filename}
-                </p>
-                <p className="truncate text-xs text-ink-secondary">
-                  {track.artist || track.album_artist || "Unknown Artist"} —{" "}
-                  {track.album || "Unknown Album"}
-                </p>
+          {!isMulti ? (
+            <div className="rounded-xl border border-border-subtle bg-canvas p-3.5 space-y-2">
+              <div className="flex items-start gap-2.5">
+                <FileAudio className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-semibold text-ink-primary">
+                    {single.title || single.filename}
+                  </p>
+                  <p className="truncate text-xs text-ink-secondary">
+                    {single.artist || single.album_artist || "Unknown Artist"} —{" "}
+                    {single.album || "Unknown Album"}
+                  </p>
+                </div>
+              </div>
+
+              <p className="break-all rounded-lg bg-surface px-2.5 py-1.5 font-mono text-[11px] text-ink-secondary">
+                {single.path}
+              </p>
+
+              <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-ink-muted">
+                <span className="rounded border border-border-subtle bg-surface px-1.5 py-0.5 text-[10px] text-ink-secondary">
+                  {single.format}
+                </span>
+                {single.bitrate && (
+                  <span>{Math.round(single.bitrate / 1000)} kbps</span>
+                )}
+                {single.sample_rate && (
+                  <span>{(single.sample_rate / 1000).toFixed(1)} kHz</span>
+                )}
+                <span>{formatDuration(single.duration)}</span>
+                <span>{formatFileSize(single.file_size)}</span>
               </div>
             </div>
+          ) : (
+            <div className="rounded-xl border border-border-subtle bg-canvas p-3 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-ink-primary">
+                  {tracks.length} selected audio files
+                </span>
+                <span className="font-mono text-[11px] text-ink-muted">
+                  {formatDuration(totalDuration)} · {formatFileSize(totalSize)}
+                </span>
+              </div>
 
-            <p className="break-all rounded-lg bg-surface px-2.5 py-1.5 font-mono text-[11px] text-ink-secondary">
-              {track.path}
-            </p>
-
-            <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-ink-muted">
-              <span className="rounded border border-border-subtle bg-surface px-1.5 py-0.5 text-[10px] text-ink-secondary">
-                {track.format}
-              </span>
-              {track.bitrate && (
-                <span>{Math.round(track.bitrate / 1000)} kbps</span>
-              )}
-              {track.sample_rate && (
-                <span>{(track.sample_rate / 1000).toFixed(1)} kHz</span>
-              )}
-              <span>{formatDuration(track.duration)}</span>
-              <span>{formatFileSize(track.file_size)}</span>
+              <ul className="max-h-48 space-y-1.5 overflow-y-auto pr-1">
+                {tracks.map((t) => (
+                  <li
+                    key={t.path}
+                    className="flex items-start gap-2 rounded-lg border border-border-subtle/70 bg-surface px-2.5 py-1.5 text-xs"
+                  >
+                    <FileAudio className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate font-medium text-ink-primary">
+                          {t.title || t.filename}
+                        </p>
+                        <span className="shrink-0 font-mono text-[10px] text-ink-muted">
+                          {t.format} · {formatFileSize(t.file_size)}
+                        </span>
+                      </div>
+                      <p className="truncate font-mono text-[10px] text-ink-muted">
+                        {t.path}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </div>
+          )}
 
           <label className="flex items-start gap-2.5 text-xs text-ink-secondary cursor-pointer select-none">
             <input
@@ -136,7 +180,7 @@ export function DeleteTrackModal({
           <div className="flex items-start gap-2 rounded-xl border border-danger/40 bg-danger/10 px-3 py-2.5 text-xs text-ink-primary">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />
             <span>
-              This deletes the file directly from your music library and{" "}
+              This deletes {isMulti ? `all ${tracks.length} files` : "the file"} directly from your music library and{" "}
               <strong>cannot be undone</strong>.
             </span>
           </div>
@@ -158,7 +202,7 @@ export function DeleteTrackModal({
             type="button"
             disabled={deleting}
             onClick={() =>
-              void onConfirm(track, {
+              void onConfirm(tracks, {
                 deleteSidecars: cleanupExtras,
                 cleanupEmptyDirs: cleanupExtras,
               })
@@ -170,7 +214,11 @@ export function DeleteTrackModal({
             ) : (
               <Trash2 className="h-3.5 w-3.5" />
             )}
-            {deleting ? "Deleting..." : "Delete File"}
+            {deleting
+              ? "Deleting..."
+              : isMulti
+                ? `Delete ${tracks.length} Files`
+                : "Delete File"}
           </button>
         </div>
       </div>

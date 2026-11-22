@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Code2,
   Disc3,
+  ExternalLink,
   FileAudio,
   FolderInput,
   Globe,
@@ -33,6 +34,7 @@ interface MetadataEditorProps {
   artworkRevision: number;
   saving: boolean;
   uploadingArtwork: boolean;
+  width?: number;
   onSaveTrack: (path: string, updates: Partial<TrackTags>) => Promise<void>;
   onSaveBulk: (paths: string[], updates: Partial<TrackTags>) => Promise<void>;
   onUploadArtwork: (paths: string[], file: File) => Promise<void>;
@@ -158,6 +160,7 @@ export function MetadataEditor({
   artworkRevision,
   saving,
   uploadingArtwork,
+  width = 400,
   onSaveTrack,
   onSaveBulk,
   onUploadArtwork,
@@ -382,7 +385,10 @@ export function MetadataEditor({
 
   if (!selectedTrack && !bulkAlbum) {
     return (
-      <aside className="hidden lg:flex w-96 shrink-0 flex-col items-center justify-center border-l border-border-subtle bg-surface p-8 text-center">
+      <aside
+        style={{ width }}
+        className="hidden lg:flex shrink-0 flex-col items-center justify-center border-l border-border-subtle bg-surface p-8 text-center"
+      >
         <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-border-subtle bg-canvas text-ink-muted">
           <FileAudio className="h-5 w-5" />
         </div>
@@ -417,6 +423,13 @@ export function MetadataEditor({
     const isMixed =
       isBulk && mixedFields.has(field.key) && !touched.has(field.key);
     const hasSplitWarning = navidromeWarningFields.has(field.key);
+    const trimmedVal = form[field.key].trim();
+    const mbExternalUrl =
+      field.key === "musicbrainz_album_id" && trimmedVal
+        ? `https://musicbrainz.org/release/${encodeURIComponent(trimmedVal)}`
+        : field.key === "musicbrainz_album_artist_id" && trimmedVal
+          ? `https://musicbrainz.org/artist/${encodeURIComponent(trimmedVal)}`
+          : null;
 
     return (
       <div
@@ -439,6 +452,18 @@ export function MetadataEditor({
             )}
           </span>
           <span className="flex items-center gap-1.5 shrink-0">
+            {mbExternalUrl && (
+              <a
+                href={mbExternalUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-0.5 text-[10px] text-accent hover:underline"
+                title={`Open ${field.label} on MusicBrainz.org`}
+              >
+                <ExternalLink className="h-2.5 w-2.5" />
+                <span>Open</span>
+              </a>
+            )}
             {isBulk && (isMixed || form[field.key]) && (
               <button
                 type="button"
@@ -467,7 +492,10 @@ export function MetadataEditor({
   }
 
   return (
-    <aside className="flex w-full lg:w-[400px] shrink-0 flex-col border-l border-border-subtle bg-surface overflow-hidden">
+    <aside
+      style={{ width }}
+      className="flex w-full shrink-0 flex-col border-l border-border-subtle bg-surface overflow-hidden"
+    >
       {/* Inspector Header */}
       <div className="flex items-center justify-between border-b border-border-subtle px-5 py-3.5">
         <div className="min-w-0">

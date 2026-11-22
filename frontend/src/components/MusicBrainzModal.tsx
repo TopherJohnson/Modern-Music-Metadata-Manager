@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Check,
   Disc3,
+  ExternalLink,
   Globe,
   Loader2,
   Search,
@@ -426,9 +427,22 @@ export function MusicBrainzModal({
                     </div>
 
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-semibold text-ink-primary">
-                        {release.title}
-                      </p>
+                      <div className="flex items-start justify-between gap-1.5">
+                        <p className="truncate text-xs font-semibold text-ink-primary">
+                          {release.title}
+                        </p>
+                        <a
+                          href={`https://musicbrainz.org/release/${release.mbid}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="shrink-0 rounded p-0.5 text-ink-muted hover:bg-surface hover:text-accent transition-colors"
+                          title={`Open release ${release.mbid} on MusicBrainz`}
+                          aria-label={`Open ${release.title} on MusicBrainz`}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      </div>
                       <p className="mt-0.5 truncate text-xs text-ink-secondary">
                         {release.artist}
                       </p>
@@ -661,11 +675,25 @@ export function MusicBrainzModal({
           </div>
 
           <div className="flex items-center justify-between gap-3">
-            <p className="truncate font-mono text-[10px] text-ink-muted">
-              {selectedRelease
-                ? `MBID: ${selectedRelease.mbid}`
-                : "Select a release match above"}
-            </p>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <p className="truncate font-mono text-[10px] text-ink-muted">
+                {selectedRelease
+                  ? `MBID: ${selectedRelease.mbid}`
+                  : "Select a release match above"}
+              </p>
+              {selectedRelease && (
+                <a
+                  href={`https://musicbrainz.org/release/${selectedRelease.mbid}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-accent hover:bg-accent-soft transition-colors"
+                  title="Inspect release on MusicBrainz.org"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  <span>Open</span>
+                </a>
+              )}
+            </div>
 
             <div className="flex items-center gap-2 shrink-0">
               <button
