@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import random
 import re
 import time
+import unicodedata
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -17,6 +20,8 @@ from app.models import (
     MusicBrainzReleaseDetail,
     MusicBrainzTrackCandidate,
     MusicBrainzTrackInfo,
+    MusicBrainzTrackMatch,
+    TrackMetadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -531,3 +536,358 @@ async def fetch_cover_art(mbid: str, *, size: int | None = 1200) -> tuple[bytes,
                     break
 
     return None
+
+
+# ==============================================================================
+# Track-to-release matching engine (disc/track #, duration, title similarity)
+# ==============================================================================
+
+_LEADING_INT_RE = re.compile(r"^\s*(\d+)")
+_FILENAME_DISC_TRACK_RE = re.compile(r"^\s*(\d{1,2})\s*[-._]\s*(\d{1,3})(?:\s*[-._)\s]\s*|\s+)(.*)$")
+_FILENAME_TRACK_RE = re.compile(r"^\s*(\d{1,3})(?:\s*[-._)\s]\s*|\s+)(.*)$")
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_PAREN_NOISE_RE = re.compile(r"\s*[\(\[](?:feat\.?|ft\.?|remaster(?:ed)?|live|bonus|explicit|clean|deluxe|radio edit|version)[^\)\]]*[\)\]]", re.IGNORECASE)
+
+
+def _parse_leading_int(value: str | None) -> int | None:
+    if not value:
+        return None
+    match = _LEADING_INT_RE.match(value)
+    if not match:
+        return None
+    num = int(match.group(1))
+    return num if num > 0 else None
+
+
+def _parse_filename_hint(filename: str) -> tuple[int | None, int | None, str]:
+    """Extract optional `(disc_hint, track_hint, cleaned_title)` from an audio filename."""
+    stem = Path(filename).stem.strip()
+    m_dt = _FILENAME_DISC_TRACK_RE.match(stem)
+    if m_dt:
+        disc_n = int(m_dt.group(1))
+        track_n = int(m_dt.group(2))
+        rest = m_dt.group(3).strip(" -_.")
+        if 1 <= disc_n <= 20 and 1 <= track_n <= 200:
+            return disc_n, track_n, rest or stem
+
+    m_t = _FILENAME_TRACK_RE.match(stem)
+    if m_t:
+        track_n = int(m_t.group(1))
+        rest = m_t.group(2).strip(" -_.")
+        if 1 <= track_n <= 200:
+            return None, track_n, rest or stem
+
+    return None, None, stem
+
+
+def _normalize_title(text: str | None) -> str:
+    if not text:
+        return ""
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    cleaned = _PAREN_NOISE_RE.sub(" ", folded.lower())
+    return _NON_ALNUM_RE.sub(" ", cleaned).strip()
+
+
+def _title_similarity(local_text: str | None, mb_text: str | None) -> float:
+    a = _normalize_title(local_text)
+    b = _normalize_title(mb_text)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    # Boost when one normalized title cleanly contains the other (e.g., extra subtitle)
+    if len(a) >= 4 and len(b) >= 4 and (a in b or b in a):
+        shorter = min(len(a), len(b))
+        longer = max(len(a), len(b))
+        if shorter / longer >= 0.55:
+            ratio = max(ratio, 0.86)
+    return ratio
+
+
+def _duration_diff_sec(local_duration: float, mb_length_ms: int | None) -> float | None:
+    if not mb_length_ms or mb_length_ms <= 0 or local_duration <= 0.5:
+        return None
+    return abs(local_duration - (mb_length_ms / 1000.0))
+
+
+def _build_match_record(
+    local: TrackMetadata,
+    mb: MusicBrainzTrackInfo | None,
+    *,
+    method: str,
+    confidence: str,
+    reason: str | None,
+) -> MusicBrainzTrackMatch:
+    return MusicBrainzTrackMatch(
+        local_path=local.path,
+        local_filename=local.filename,
+        local_title=local.title,
+        local_artist=local.artist,
+        local_track_number=local.track_number,
+        local_disc_number=local.disc_number,
+        local_duration=local.duration,
+        matched=mb is not None,
+        match_method=method,
+        confidence=confidence,
+        reason=reason,
+        mb_disc_number=mb.disc_number if mb else None,
+        mb_disc_total=mb.disc_total if mb else None,
+        mb_track_number=mb.track_number if mb else None,
+        mb_track_total=mb.track_total if mb else None,
+        mb_title=mb.title if mb else None,
+        mb_artist=mb.artist if mb else None,
+        mb_length_ms=mb.length_ms if mb else None,
+    )
+
+
+def match_tracks_to_release(
+    local_tracks: list[TrackMetadata],
+    mb_tracks: list[MusicBrainzTrackInfo],
+) -> list[MusicBrainzTrackMatch]:
+    """Match local audio files to MusicBrainz release tracks without blind positional shifting.
+
+    Priority pipeline (strict one-to-one assignment):
+      1. Disc & Track number match (verified against duration & title when available).
+      2. Normalized title similarity (boosted/verified by duration closeness).
+      3. Unambiguous duration match for untitled tracks without track numbers.
+      4. Unmatched tracks are flagged and left untouched rather than shifted off-by-one.
+    """
+    if not local_tracks:
+        return []
+    if not mb_tracks:
+        return [
+            _build_match_record(
+                t,
+                None,
+                method="unmatched",
+                confidence="none",
+                reason="Release has no tracklist entries on MusicBrainz.",
+            )
+            for t in local_tracks
+        ]
+
+    disc_numbers_present = {m.disc_number for m in mb_tracks}
+    is_single_disc = len(disc_numbers_present) <= 1
+
+    # Index MB tracks by (disc_number, track_number) and by track_number alone
+    by_disc_track: dict[tuple[int, int], int] = {}
+    by_track_only: dict[int, list[int]] = {}
+    for mb_idx, mb in enumerate(mb_tracks):
+        by_disc_track.setdefault((mb.disc_number, mb.track_number), mb_idx)
+        by_track_only.setdefault(mb.track_number, []).append(mb_idx)
+
+    # Pre-compute parsed local metadata hints
+    local_hints: list[tuple[int | None, int | None, str, bool]] = []
+    for t in local_tracks:
+        fn_disc, fn_track, fn_title = _parse_filename_hint(t.filename)
+        tag_track = _parse_leading_int(t.track_number)
+        tag_disc = _parse_leading_int(t.disc_number)
+        eff_track = tag_track if tag_track is not None else fn_track
+        eff_disc = tag_disc if tag_disc is not None else fn_disc
+        eff_title = (t.title or "").strip() or fn_title
+        from_tag = tag_track is not None
+        local_hints.append((eff_disc, eff_track, eff_title, from_tag))
+
+    assigned_mb: dict[int, tuple[int, str, str, str | None]] = {}
+    used_mb_indices: set[int] = set()
+
+    # ------------------------------------------------------------------
+    # Stage 1: Disc & Track number matching (with conflict & mismatch guard)
+    # ------------------------------------------------------------------
+    stage1_candidates: dict[int, list[tuple[float, int, str, str | None]]] = {}
+    for local_idx, local in enumerate(local_tracks):
+        eff_disc, eff_track, eff_title, from_tag = local_hints[local_idx]
+        if eff_track is None:
+            continue
+
+        mb_idx: int | None = None
+        if eff_disc is not None:
+            mb_idx = by_disc_track.get((eff_disc, eff_track))
+        elif is_single_disc:
+            single_disc_num = next(iter(disc_numbers_present))
+            mb_idx = by_disc_track.get((single_disc_num, eff_track))
+        else:
+            matches_for_num = by_track_only.get(eff_track, [])
+            if len(matches_for_num) == 1:
+                mb_idx = matches_for_num[0]
+
+        if mb_idx is None:
+            continue
+
+        mb = mb_tracks[mb_idx]
+        sim = _title_similarity(eff_title, mb.title)
+        dur_diff = _duration_diff_sec(local.duration, mb.length_ms)
+
+        # Guard against obviously shifted/wrong local track numbers:
+        # If BOTH title and duration strongly disagree with the numbered MB track,
+        # check if another MB track is an unmistakable title+duration match and defer.
+        if sim < 0.35 and dur_diff is not None and dur_diff > 15.0:
+            has_better_elsewhere = any(
+                other_idx != mb_idx
+                and _title_similarity(eff_title, other.title) >= 0.80
+                and (
+                    (_duration_diff_sec(local.duration, other.length_ms) or 0.0) <= 10.0
+                )
+                for other_idx, other in enumerate(mb_tracks)
+            )
+            if has_better_elsewhere:
+                continue
+
+        # Score candidate fit in case duplicate local files share the same track number
+        fit_score = (sim * 2.0) + (0.25 if from_tag else 0.0)
+        if dur_diff is not None:
+            fit_score += max(0.0, 1.5 - (dur_diff / 20.0))
+
+        # Determine confidence & human-readable explanation
+        disc_label = f"disc {mb.disc_number}, track {mb.track_number}" if not is_single_disc else f"track #{mb.track_number}"
+        if dur_diff is not None and dur_diff > 20.0 and sim < 0.55:
+            confidence = "low"
+            reason = f"Matched by {disc_label}, but duration differs by {round(dur_diff)}s — verify before applying"
+        elif dur_diff is not None and dur_diff <= 10.0:
+            confidence = "high"
+            reason = f"Matched by {disc_label} (duration within {round(dur_diff)}s)"
+        elif sim >= 0.65:
+            confidence = "high"
+            reason = f"Matched by {disc_label} & title"
+        else:
+            confidence = "high" if from_tag else "medium"
+            reason = f"Matched by {'tag' if from_tag else 'filename'} {disc_label}"
+
+        stage1_candidates.setdefault(mb_idx, []).append(
+            (fit_score, local_idx, confidence, reason)
+        )
+
+    for mb_idx, cands in stage1_candidates.items():
+        cands.sort(key=lambda item: (-item[0], item[1]))
+        _, best_local_idx, confidence, reason = cands[0]
+        assigned_mb[best_local_idx] = (mb_idx, "disc_track", confidence, reason)
+        used_mb_indices.add(mb_idx)
+
+    # ------------------------------------------------------------------
+    # Stage 2: Title similarity (verified/boosted by duration)
+    # ------------------------------------------------------------------
+    title_pairs: list[tuple[float, int, int, str, str, str]] = []
+    for local_idx, local in enumerate(local_tracks):
+        if local_idx in assigned_mb:
+            continue
+        _, _, eff_title, _ = local_hints[local_idx]
+        if not _normalize_title(eff_title):
+            continue
+
+        for mb_idx, mb in enumerate(mb_tracks):
+            if mb_idx in used_mb_indices:
+                continue
+            sim = _title_similarity(eff_title, mb.title)
+            dur_diff = _duration_diff_sec(local.duration, mb.length_ms)
+
+            if sim >= 0.78:
+                if dur_diff is not None and dur_diff <= 15.0:
+                    score = sim + 0.35 - (dur_diff / 100.0)
+                    title_pairs.append(
+                        (
+                            score,
+                            local_idx,
+                            mb_idx,
+                            "title_duration",
+                            "high",
+                            f"Matched by title ({int(round(sim * 100))}%) & duration (within {round(dur_diff)}s)",
+                        )
+                    )
+                elif dur_diff is None or dur_diff <= 45.0:
+                    score = sim
+                    title_pairs.append(
+                        (
+                            score,
+                            local_idx,
+                            mb_idx,
+                            "title",
+                            "high" if sim >= 0.90 else "medium",
+                            f"Matched by title similarity ({int(round(sim * 100))}%)",
+                        )
+                    )
+            elif sim >= 0.55 and dur_diff is not None and dur_diff <= 10.0:
+                score = sim + 0.25 - (dur_diff / 100.0)
+                title_pairs.append(
+                    (
+                        score,
+                        local_idx,
+                        mb_idx,
+                        "title_duration",
+                        "high",
+                        f"Matched by title ({int(round(sim * 100))}%) & duration (within {round(dur_diff)}s)",
+                    )
+                )
+
+    title_pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
+    for _, local_idx, mb_idx, method, confidence, reason in title_pairs:
+        if local_idx in assigned_mb or mb_idx in used_mb_indices:
+            continue
+        assigned_mb[local_idx] = (mb_idx, method, confidence, reason)
+        used_mb_indices.add(mb_idx)
+
+    # ------------------------------------------------------------------
+    # Stage 3: Pure duration match for untitled/unnumbered tracks
+    # ------------------------------------------------------------------
+    duration_pairs: list[tuple[float, int, int, str]] = []
+    for local_idx, local in enumerate(local_tracks):
+        if local_idx in assigned_mb or local.duration < 10.0:
+            continue
+        close: list[tuple[float, int]] = []
+        for mb_idx, mb in enumerate(mb_tracks):
+            if mb_idx in used_mb_indices:
+                continue
+            dur_diff = _duration_diff_sec(local.duration, mb.length_ms)
+            if dur_diff is not None and dur_diff <= 4.0:
+                close.append((dur_diff, mb_idx))
+        if not close:
+            continue
+        close.sort(key=lambda item: item[0])
+        # Only accept if clearly unambiguous (no second candidate within 3s of the best)
+        if len(close) == 1 or (close[1][0] - close[0][0]) >= 3.0:
+            best_diff, best_mb_idx = close[0]
+            duration_pairs.append(
+                (
+                    best_diff,
+                    local_idx,
+                    best_mb_idx,
+                    f"Matched by duration (within {best_diff:.1f}s)",
+                )
+            )
+
+    duration_pairs.sort(key=lambda item: (item[0], item[1]))
+    for _, local_idx, mb_idx, reason in duration_pairs:
+        if local_idx in assigned_mb or mb_idx in used_mb_indices:
+            continue
+        assigned_mb[local_idx] = (mb_idx, "duration", "medium", reason)
+        used_mb_indices.add(mb_idx)
+
+    # ------------------------------------------------------------------
+    # Stage 4: Build final ordered result (unmatched tracks stay untouched)
+    # ------------------------------------------------------------------
+    results: list[MusicBrainzTrackMatch] = []
+    for local_idx, local in enumerate(local_tracks):
+        match_tuple = assigned_mb.get(local_idx)
+        if match_tuple is None:
+            results.append(
+                _build_match_record(
+                    local,
+                    None,
+                    method="unmatched",
+                    confidence="none",
+                    reason="No reliable match in this MusicBrainz release — title & track number will be left unchanged.",
+                )
+            )
+        else:
+            mb_idx, method, confidence, reason = match_tuple
+            results.append(
+                _build_match_record(
+                    local,
+                    mb_tracks[mb_idx],
+                    method=method,
+                    confidence=confidence,
+                    reason=reason,
+                )
+            )
+    return results
+

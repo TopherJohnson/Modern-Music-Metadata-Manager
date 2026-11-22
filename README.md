@@ -88,6 +88,7 @@ All library/track/history/organize endpoints target the default library unless s
 | `GET` | `/api/musicbrainz/search` | Search MusicBrainz releases by album & artist |
 | `GET` | `/api/musicbrainz/search/track` | Search MusicBrainz recordings to identify a single untagged track |
 | `GET` | `/api/musicbrainz/cover/{mbid}` | Proxy Cover Art Archive front cover preview |
+| `POST` | `/api/musicbrainz/preview` | Preview prioritized track-to-release matching before overwriting track titles/numbers |
 | `POST` | `/api/musicbrainz/apply` | Apply a chosen MusicBrainz release's tags and/or cover art to an album |
 | `POST` | `/api/musicbrainz/apply/track` | Apply a chosen MusicBrainz recording/release match to a single track |
 | `GET/PUT` | `/api/settings/organize` | Read or update persisted per-library folder structure preferences |

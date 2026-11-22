@@ -12,9 +12,12 @@ from app.models import (
     MusicBrainzApplyResponse,
     MusicBrainzApplyTrackRequest,
     MusicBrainzApplyTrackResponse,
+    MusicBrainzPreviewRequest,
+    MusicBrainzPreviewResponse,
     MusicBrainzReleaseCandidate,
     MusicBrainzReleaseDetail,
     MusicBrainzTrackCandidate,
+    MusicBrainzTrackMatch,
     TrackMetadata,
 )
 from app.routers._deps import resolve_library
@@ -22,6 +25,7 @@ from app.services.musicbrainz import (
     MusicBrainzError,
     fetch_cover_art,
     get_release_detail,
+    match_tracks_to_release,
     search_recordings,
     search_releases,
 )
@@ -60,6 +64,42 @@ async def get_musicbrainz_release(mbid: str) -> MusicBrainzReleaseDetail:
         return await get_release_detail(mbid)
     except MusicBrainzError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/preview", response_model=MusicBrainzPreviewResponse)
+async def preview_musicbrainz_release(
+    request: Request,
+    payload: MusicBrainzPreviewRequest,
+) -> MusicBrainzPreviewResponse:
+    """Preview how local tracks match against a MusicBrainz release tracklist before applying."""
+    lib = resolve_library(request)
+
+    try:
+        release = await get_release_detail(payload.mbid)
+    except MusicBrainzError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    target_paths = list(dict.fromkeys(payload.paths))
+    local_tracks: list[TrackMetadata] = []
+    for rel_path in target_paths:
+        try:
+            local_tracks.append(read_track_metadata(lib.path, rel_path))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not read local track '{rel_path}': {exc}",
+            ) from exc
+
+    matches = match_tracks_to_release(local_tracks, release.tracks)
+    matched_count = sum(1 for m in matches if m.matched)
+    return MusicBrainzPreviewResponse(
+        release=release,
+        local_track_count=len(local_tracks),
+        release_track_count=len(release.tracks) or release.track_count,
+        matched_count=matched_count,
+        unmatched_count=len(matches) - matched_count,
+        matches=matches,
+    )
 
 
 @router.get("/cover/{mbid}")
@@ -123,6 +163,18 @@ async def apply_musicbrainz_release(
     tag_batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
     art_batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
 
+    # Compute prioritized track-to-release matches when overwriting track titles/numbers
+    match_by_path: dict[str, MusicBrainzTrackMatch] = {}
+    if payload.apply_track_titles and release is not None:
+        local_tracks: list[TrackMetadata] = []
+        for rel_path in target_paths:
+            try:
+                local_tracks.append(read_track_metadata(lib.path, rel_path))
+            except Exception:
+                pass
+        for match in match_tracks_to_release(local_tracks, release.tracks):
+            match_by_path[match.local_path] = match
+
     # Build album-level tag updates from MusicBrainz release
     shared_updates: dict[str, str | None] = {}
     if payload.apply_metadata and release is not None:
@@ -141,22 +193,32 @@ async def apply_musicbrainz_release(
 
     updated: list[TrackMetadata] = []
     errors: list[BulkUpdateError] = []
+    unmatched_paths: list[str] = []
+    matched_tracks = 0
     artwork_applied = False
 
-    for idx, rel_path in enumerate(target_paths):
+    for rel_path in target_paths:
         try:
             file_updates = dict(shared_updates)
-            if (
-                payload.apply_track_titles
-                and release is not None
-                and idx < len(release.tracks)
-            ):
-                mb_track = release.tracks[idx]
-                file_updates["title"] = mb_track.title
-                file_updates["track_number"] = f"{mb_track.track_number}/{mb_track.track_total}"
-                file_updates["disc_number"] = f"{mb_track.disc_number}/{mb_track.disc_total}"
-                if mb_track.artist:
-                    file_updates["artist"] = mb_track.artist
+            if payload.apply_track_titles and release is not None:
+                match = match_by_path.get(rel_path)
+                if (
+                    match is not None
+                    and match.matched
+                    and match.mb_title is not None
+                    and match.mb_track_number is not None
+                    and match.mb_track_total is not None
+                    and match.mb_disc_number is not None
+                    and match.mb_disc_total is not None
+                ):
+                    file_updates["title"] = match.mb_title
+                    file_updates["track_number"] = f"{match.mb_track_number}/{match.mb_track_total}"
+                    file_updates["disc_number"] = f"{match.mb_disc_number}/{match.mb_disc_total}"
+                    if match.mb_artist:
+                        file_updates["artist"] = match.mb_artist
+                    matched_tracks += 1
+                else:
+                    unmatched_paths.append(rel_path)
 
             after: TrackMetadata | None = None
             if file_updates:
@@ -206,6 +268,8 @@ async def apply_musicbrainz_release(
         navidrome_sync=navidrome_sync,
         artwork_applied=artwork_applied,
         artwork_note=artwork_note,
+        matched_tracks=matched_tracks,
+        unmatched_paths=unmatched_paths,
     )
 
 

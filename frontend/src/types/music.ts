@@ -197,6 +197,52 @@ export interface MusicBrainzReleaseCandidate {
   cover_art_url: string;
 }
 
+export interface MusicBrainzTrackInfo {
+  disc_number: number;
+  disc_total: number;
+  track_number: number;
+  track_total: number;
+  title: string;
+  artist: string | null;
+  length_ms: number | null;
+}
+
+export interface MusicBrainzReleaseDetail extends MusicBrainzReleaseCandidate {
+  genre: string | null;
+  compilation: boolean;
+  tracks: MusicBrainzTrackInfo[];
+}
+
+export interface MusicBrainzTrackMatch {
+  local_path: string;
+  local_filename: string;
+  local_title: string | null;
+  local_artist: string | null;
+  local_track_number: string | null;
+  local_disc_number: string | null;
+  local_duration: number;
+  matched: boolean;
+  match_method: "disc_track" | "title_duration" | "title" | "duration" | "unmatched" | string;
+  confidence: "high" | "medium" | "low" | "none" | string;
+  reason: string | null;
+  mb_disc_number: number | null;
+  mb_disc_total: number | null;
+  mb_track_number: number | null;
+  mb_track_total: number | null;
+  mb_title: string | null;
+  mb_artist: string | null;
+  mb_length_ms: number | null;
+}
+
+export interface MusicBrainzPreviewResponse {
+  release: MusicBrainzReleaseDetail;
+  local_track_count: number;
+  release_track_count: number;
+  matched_count: number;
+  unmatched_count: number;
+  matches: MusicBrainzTrackMatch[];
+}
+
 export interface MusicBrainzApplyPayload {
   mbid: string;
   paths: string[];
@@ -209,6 +255,8 @@ export interface MusicBrainzApplyPayload {
 export interface MusicBrainzApplyResponse extends BulkUpdateResponse {
   artwork_applied: boolean;
   artwork_note: string | null;
+  matched_tracks: number;
+  unmatched_paths: string[];
 }
 
 export interface MusicBrainzTrackCandidate {

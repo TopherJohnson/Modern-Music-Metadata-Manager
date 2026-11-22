@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
+  ArrowRight,
   Check,
   Disc3,
   Globe,
@@ -8,10 +10,16 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { searchMusicBrainz } from "../api/client";
+import {
+  formatDuration,
+  previewMusicBrainzRelease,
+  searchMusicBrainz,
+} from "../api/client";
 import type {
   MusicBrainzApplyPayload,
+  MusicBrainzPreviewResponse,
   MusicBrainzReleaseCandidate,
+  MusicBrainzTrackMatch,
 } from "../types/music";
 
 export type MusicBrainzModalMode = "identify" | "artwork";
@@ -55,6 +63,71 @@ function CandidateCover({ url, title }: { url: string; title: string }) {
   );
 }
 
+function formatLocalNum(match: MusicBrainzTrackMatch): string {
+  const disc =
+    match.local_disc_number &&
+    !match.local_disc_number.startsWith("1/") &&
+    match.local_disc_number !== "1"
+      ? `${match.local_disc_number.split("/")[0]}-`
+      : "";
+  return match.local_track_number ? `${disc}${match.local_track_number}` : "—";
+}
+
+function formatMbNum(match: MusicBrainzTrackMatch): string {
+  if (match.mb_track_number === null) return "—";
+  const discPrefix =
+    match.mb_disc_total && match.mb_disc_total > 1 && match.mb_disc_number
+      ? `${match.mb_disc_number}-`
+      : "";
+  const totalSuffix = match.mb_track_total ? `/${match.mb_track_total}` : "";
+  return `${discPrefix}${match.mb_track_number}${totalSuffix}`;
+}
+
+function getMatchBadge(match: MusicBrainzTrackMatch): {
+  label: string;
+  className: string;
+} {
+  if (!match.matched) {
+    return {
+      label: "Unmatched",
+      className: "border-warn/40 bg-warn/10 text-warn",
+    };
+  }
+  if (match.confidence === "low") {
+    return {
+      label: "Verify",
+      className: "border-warn/40 bg-warn/10 text-warn",
+    };
+  }
+  switch (match.match_method) {
+    case "disc_track":
+      return {
+        label: "Track #",
+        className: "border-ok/40 bg-ok/10 text-ok",
+      };
+    case "title_duration":
+      return {
+        label: "Title + Time",
+        className: "border-ok/40 bg-ok/10 text-ok",
+      };
+    case "title":
+      return {
+        label: "Title",
+        className: "border-accent/40 bg-accent-soft text-accent",
+      };
+    case "duration":
+      return {
+        label: "Duration",
+        className: "border-accent/40 bg-accent-soft text-accent",
+      };
+    default:
+      return {
+        label: "Matched",
+        className: "border-ok/40 bg-ok/10 text-ok",
+      };
+  }
+}
+
 export function MusicBrainzModal({
   open,
   mode,
@@ -77,33 +150,41 @@ export function MusicBrainzModal({
   const [applyArtwork, setApplyArtwork] = useState(true);
   const [applyTrackTitles, setApplyTrackTitles] = useState(false);
 
-  const runSearch = useCallback(async (album: string, artist: string) => {
-    if (!album.trim()) {
-      setResults([]);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const items = await searchMusicBrainz(album, artist);
-      setResults(items);
-      if (items.length > 0) {
-        // Prefer the highest-scoring release matching local track count if available
-        const exactCount = items.find((r) => r.track_count === localTrackCount);
-        setSelectedMbid((exactCount ?? items[0]).mbid);
-      } else {
-        setSelectedMbid(null);
+  const [preview, setPreview] = useState<MusicBrainzPreviewResponse | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewReloadKey, setPreviewReloadKey] = useState(0);
+
+  const runSearch = useCallback(
+    async (album: string, artist: string) => {
+      if (!album.trim()) {
+        setResults([]);
+        return;
       }
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Could not reach MusicBrainz."
-      );
-      setResults([]);
-      setSelectedMbid(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [localTrackCount]);
+      setLoading(true);
+      setError(null);
+      try {
+        const items = await searchMusicBrainz(album, artist);
+        setResults(items);
+        if (items.length > 0) {
+          // Prefer the highest-scoring release matching local track count if available
+          const exactCount = items.find((r) => r.track_count === localTrackCount);
+          setSelectedMbid((exactCount ?? items[0]).mbid);
+        } else {
+          setSelectedMbid(null);
+        }
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Could not reach MusicBrainz."
+        );
+        setResults([]);
+        setSelectedMbid(null);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [localTrackCount]
+  );
 
   // Reset form & auto-search whenever modal opens
   useEffect(() => {
@@ -113,8 +194,50 @@ export function MusicBrainzModal({
     setApplyMetadata(mode === "identify");
     setApplyArtwork(true);
     setApplyTrackTitles(false);
+    setPreview(null);
+    setPreviewError(null);
     void runSearch(initialAlbum, initialArtist);
   }, [open, mode, initialAlbum, initialArtist, runSearch]);
+
+  // Load track-by-track mapping preview whenever "overwrite track titles & numbers" is enabled
+  useEffect(() => {
+    if (!open || !applyTrackTitles || !selectedMbid || targetPaths.length === 0) {
+      setPreview(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    void previewMusicBrainzRelease(selectedMbid, targetPaths)
+      .then((res) => {
+        if (!cancelled) {
+          setPreview(res);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPreview(null);
+          setPreviewError(
+            err instanceof Error
+              ? err.message
+              : "Could not load MusicBrainz tracklist preview."
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPreviewLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, applyTrackTitles, selectedMbid, targetPaths, previewReloadKey]);
 
   // Close on Escape
   useEffect(() => {
@@ -131,14 +254,15 @@ export function MusicBrainzModal({
   if (!open) return null;
 
   const selectedRelease = results.find((r) => r.mbid === selectedMbid) ?? null;
-  const trackCountMatches =
+  const trackCountDiffers =
     selectedRelease !== null &&
-    targetPaths.length > 1 &&
-    selectedRelease.track_count === targetPaths.length;
+    selectedRelease.track_count > 0 &&
+    selectedRelease.track_count !== targetPaths.length;
 
   const canApply =
     selectedRelease !== null &&
     !applying &&
+    !(applyTrackTitles && previewLoading) &&
     (applyMetadata || applyArtwork || applyTrackTitles);
 
   async function handleSearchSubmit(event: React.FormEvent) {
@@ -169,7 +293,7 @@ export function MusicBrainzModal({
         if (e.target === e.currentTarget && !applying) onClose();
       }}
     >
-      <div className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border-strong bg-surface shadow-2xl">
+      <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border-strong bg-surface shadow-2xl">
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4">
           <div className="flex items-center gap-2.5 min-w-0">
@@ -243,8 +367,8 @@ export function MusicBrainzModal({
           </button>
         </form>
 
-        {/* Results Grid */}
-        <div className="flex-1 overflow-y-auto p-5">
+        {/* Scrollable Body: Release Candidates + Optional Track Mapping Preview */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-2.5 py-14 text-ink-secondary">
               <Loader2 className="h-5 w-5 animate-spin text-accent" />
@@ -355,6 +479,145 @@ export function MusicBrainzModal({
               })}
             </div>
           )}
+
+          {/* Track Mapping Preview Panel */}
+          {applyTrackTitles && selectedRelease && (
+            <div
+              id="mb-track-mapping-preview"
+              className="rounded-xl border border-border-strong bg-canvas/75 p-4 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xs font-semibold text-ink-primary">
+                    Track Mapping Preview
+                  </h3>
+                  <p className="text-[11px] text-ink-muted">
+                    Matched by disc/track #, duration, and title — unmatched tracks stay untouched
+                  </p>
+                </div>
+
+                {preview && (
+                  <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px]">
+                    <span className="rounded border border-ok/40 bg-ok/10 px-2 py-0.5 text-ok">
+                      {preview.matched_count}/{preview.local_track_count} matched
+                    </span>
+                    {preview.unmatched_count > 0 && (
+                      <span className="rounded border border-warn/40 bg-warn/10 px-2 py-0.5 text-warn">
+                        {preview.unmatched_count} unmatched
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {trackCountDiffers && (
+                <div className="flex items-start gap-2 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-[11px] text-ink-primary">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+                  <span>
+                    Local album has <strong>{targetPaths.length}</strong>{" "}
+                    {targetPaths.length === 1 ? "track" : "tracks"}, while this
+                    MusicBrainz release has{" "}
+                    <strong>{selectedRelease.track_count}</strong>. Review the
+                    mapping below before applying.
+                  </span>
+                </div>
+              )}
+
+              {previewLoading ? (
+                <div className="flex items-center justify-center gap-2 py-6 text-xs text-ink-secondary">
+                  <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                  Loading release tracklist &amp; matching local files...
+                </div>
+              ) : previewError ? (
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-xs text-ink-primary">
+                  <span className="truncate">{previewError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewReloadKey((k) => k + 1)}
+                    className="m4-btn-secondary h-7 px-2.5 text-[11px] shrink-0"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : preview && preview.matches.length > 0 ? (
+                <div className="max-h-56 overflow-y-auto rounded-lg border border-border-subtle bg-surface/70">
+                  <table className="w-full border-collapse text-left text-[11px]">
+                    <thead className="sticky top-0 bg-surface border-b border-border-subtle text-[10px] uppercase tracking-wider text-ink-muted">
+                      <tr>
+                        <th className="py-1.5 pl-3 pr-2">Current (Local)</th>
+                        <th className="w-6 py-1.5 text-center" aria-hidden="true" />
+                        <th className="py-1.5 px-2">Proposed (MusicBrainz)</th>
+                        <th className="w-24 py-1.5 pl-2 pr-3 text-right">Match</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border-subtle/50">
+                      {preview.matches.map((m) => {
+                        const badge = getMatchBadge(m);
+                        const mbDurationSec =
+                          m.mb_length_ms && m.mb_length_ms > 0
+                            ? m.mb_length_ms / 1000
+                            : null;
+                        return (
+                          <tr
+                            key={m.local_path}
+                            className={m.matched ? "" : "bg-warn/5"}
+                          >
+                            <td className="py-2 pl-3 pr-2 align-top">
+                              <div className="flex items-baseline gap-1.5 min-w-0">
+                                <span className="shrink-0 font-mono text-[10px] text-ink-muted">
+                                  {formatLocalNum(m)}
+                                </span>
+                                <span className="truncate font-medium text-ink-primary">
+                                  {m.local_title || m.local_filename}
+                                </span>
+                                {m.local_duration > 0 && (
+                                  <span className="shrink-0 font-mono text-[10px] text-ink-muted">
+                                    ({formatDuration(m.local_duration)})
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-2 text-center align-top text-ink-muted">
+                              <ArrowRight className="inline h-3 w-3" />
+                            </td>
+                            <td className="py-2 px-2 align-top">
+                              {m.matched ? (
+                                <div className="flex items-baseline gap-1.5 min-w-0">
+                                  <span className="shrink-0 font-mono text-[10px] text-accent">
+                                    {formatMbNum(m)}
+                                  </span>
+                                  <span className="truncate font-medium text-ink-primary">
+                                    {m.mb_title}
+                                  </span>
+                                  {mbDurationSec !== null && (
+                                    <span className="shrink-0 font-mono text-[10px] text-ink-muted">
+                                      ({formatDuration(mbDurationSec)})
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="italic text-warn">
+                                  Unmatched — left unchanged
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 pl-2 pr-3 text-right align-top">
+                              <span
+                                title={m.reason ?? undefined}
+                                className={`inline-block rounded border px-1.5 py-0.5 font-mono text-[10px] ${badge.className}`}
+                              >
+                                {badge.label}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
 
         {/* Apply Options Footer */}
@@ -380,20 +643,13 @@ export function MusicBrainzModal({
               Replace album tags &amp; MusicBrainz IDs
             </label>
 
-            {targetPaths.length > 1 && (
+            {targetPaths.length >= 1 && (
               <label
-                className={`inline-flex items-center gap-2 select-none ${
-                  trackCountMatches
-                    ? "text-ink-primary cursor-pointer"
-                    : "text-ink-muted cursor-pointer"
-                }`}
-                title={
-                  trackCountMatches
-                    ? "Match track titles and numbers in order"
-                    : "Track count differs from this MusicBrainz release — verify before enabling"
-                }
+                className="inline-flex items-center gap-2 text-ink-primary cursor-pointer select-none"
+                title="Match local files to the MusicBrainz tracklist by disc/track #, duration, and title with a live preview"
               >
                 <input
+                  id="mb-overwrite-track-titles-checkbox"
                   type="checkbox"
                   checked={applyTrackTitles}
                   onChange={(e) => setApplyTrackTitles(e.target.checked)}

@@ -336,6 +336,49 @@ class MusicBrainzReleaseDetail(MusicBrainzReleaseCandidate):
     tracks: list[MusicBrainzTrackInfo] = Field(default_factory=list)
 
 
+class MusicBrainzTrackMatch(BaseModel):
+    """Mapping between a local audio track and a matched (or unmatched) MusicBrainz release track."""
+
+    local_path: str
+    local_filename: str
+    local_title: str | None = None
+    local_artist: str | None = None
+    local_track_number: str | None = None
+    local_disc_number: str | None = None
+    local_duration: float = 0.0
+    matched: bool = False
+    # "disc_track" | "title_duration" | "title" | "duration" | "unmatched"
+    match_method: str = "unmatched"
+    # "high" | "medium" | "low" | "none"
+    confidence: str = "none"
+    reason: str | None = None
+    mb_disc_number: int | None = None
+    mb_disc_total: int | None = None
+    mb_track_number: int | None = None
+    mb_track_total: int | None = None
+    mb_title: str | None = None
+    mb_artist: str | None = None
+    mb_length_ms: int | None = None
+
+
+class MusicBrainzPreviewRequest(BaseModel):
+    """Request track-by-track MusicBrainz release matching preview for local paths."""
+
+    mbid: str
+    paths: list[str] = Field(..., min_length=1)
+
+
+class MusicBrainzPreviewResponse(BaseModel):
+    """Track-by-track mapping preview between local files and a MusicBrainz release."""
+
+    release: MusicBrainzReleaseDetail
+    local_track_count: int
+    release_track_count: int
+    matched_count: int
+    unmatched_count: int
+    matches: list[MusicBrainzTrackMatch] = Field(default_factory=list)
+
+
 class MusicBrainzApplyRequest(BaseModel):
     """Apply a chosen MusicBrainz release's metadata and/or Cover Art Archive image to target tracks."""
 
@@ -352,6 +395,8 @@ class MusicBrainzApplyResponse(BulkUpdateResponse):
 
     artwork_applied: bool = False
     artwork_note: str | None = None
+    matched_tracks: int = 0
+    unmatched_paths: list[str] = Field(default_factory=list)
 
 
 class MusicBrainzTrackCandidate(BaseModel):

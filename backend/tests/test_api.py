@@ -944,6 +944,168 @@ def test_delete_track_file_and_sidecars(client: TestClient) -> None:
     assert client.get("/api/library").json()["stats"]["track_count"] == 0
 
 
+def test_musicbrainz_track_matching_missing_track_one_and_unmatched(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #3: missing track 1 must never shift track 2 -> track 1; unmatched tracks stay untouched."""
+    from app.models import MusicBrainzReleaseDetail, MusicBrainzTrackInfo
+    from app.routers import musicbrainz as mb_router
+
+    music_dir = client.app.state.settings.music_dir
+    # Remove track 1 so local album only has track 2 ("Music Is Math"), plus add an extra bonus track
+    (music_dir / "Boards of Canada" / "Geogaddi" / "01 - Intro.mp3").unlink()
+
+    bonus_path = music_dir / "Boards of Canada" / "Geogaddi" / "99 - Hidden Bonus.mp3"
+    _create_minimal_mp3(bonus_path)
+    bonus_tags = ID3(bonus_path)
+    bonus_tags.setall("TIT2", [TIT2(encoding=3, text=["Secret Bonus Jam"])])
+    bonus_tags.setall("TRCK", [TRCK(encoding=3, text=["99"])])
+    bonus_tags.save(bonus_path)
+
+    mbid = "33333333-3333-3333-3333-333333333333"
+
+    async def fake_detail(requested_mbid: str):
+        return MusicBrainzReleaseDetail(
+            mbid=requested_mbid,
+            title="Geogaddi",
+            artist="Boards of Canada",
+            date="2002-02-18",
+            year="2002",
+            track_count=3,
+            disc_count=1,
+            cover_art_url=f"/api/musicbrainz/cover/{requested_mbid}?size=500",
+            tracks=[
+                MusicBrainzTrackInfo(
+                    disc_number=1,
+                    disc_total=1,
+                    track_number=1,
+                    track_total=3,
+                    title="Ready Lets Go",
+                    artist="Boards of Canada",
+                    length_ms=59000,
+                ),
+                MusicBrainzTrackInfo(
+                    disc_number=1,
+                    disc_total=1,
+                    track_number=2,
+                    track_total=3,
+                    title="Music Is Math (Official)",
+                    artist="Boards of Canada",
+                    length_ms=321000,
+                ),
+                MusicBrainzTrackInfo(
+                    disc_number=1,
+                    disc_total=1,
+                    track_number=3,
+                    track_total=3,
+                    title="Beware the Friendly Stranger",
+                    artist="Boards of Canada",
+                    length_ms=37000,
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(mb_router, "get_release_detail", fake_detail)
+
+    paths = [
+        "Boards of Canada/Geogaddi/02 - Music Is Math.flac",
+        "Boards of Canada/Geogaddi/99 - Hidden Bonus.mp3",
+    ]
+
+    # 1. Preview maps track 2 -> MB track 2 (NOT track 1!) and leaves bonus track unmatched
+    prev_res = client.post("/api/musicbrainz/preview", json={"mbid": mbid, "paths": paths})
+    assert prev_res.status_code == 200
+    prev = prev_res.json()
+    assert prev["local_track_count"] == 2
+    assert prev["release_track_count"] == 3
+    assert prev["matched_count"] == 1
+    assert prev["unmatched_count"] == 1
+
+    by_path = {m["local_path"]: m for m in prev["matches"]}
+    assert by_path[paths[0]]["matched"] is True
+    assert by_path[paths[0]]["match_method"] == "disc_track"
+    assert by_path[paths[0]]["mb_track_number"] == 2
+    assert by_path[paths[0]]["mb_title"] == "Music Is Math (Official)"
+    assert by_path[paths[1]]["matched"] is False
+    assert by_path[paths[1]]["match_method"] == "unmatched"
+
+    # 2. Apply overwrites track 2 accurately and leaves the unmatched bonus track's title/track # untouched
+    apply_res = client.post(
+        "/api/musicbrainz/apply",
+        json={
+            "mbid": mbid,
+            "paths": paths,
+            "apply_metadata": True,
+            "apply_artwork": False,
+            "apply_track_titles": True,
+        },
+    )
+    assert apply_res.status_code == 200
+    body = apply_res.json()
+    assert body["matched_tracks"] == 1
+    assert body["unmatched_paths"] == [paths[1]]
+
+    updated_by_path = {t["path"]: t for t in body["updated"]}
+    assert updated_by_path[paths[0]]["title"] == "Music Is Math (Official)"
+    assert updated_by_path[paths[0]]["track_number"] == "2/3"
+    assert updated_by_path[paths[1]]["title"] == "Secret Bonus Jam"
+    assert updated_by_path[paths[1]]["track_number"] == "99"
+
+
+def test_musicbrainz_matcher_title_duration_and_multidisc() -> None:
+    """Verify title similarity, pure duration fallback, and multi-disc disambiguation."""
+    from app.models import MusicBrainzTrackInfo, TrackMetadata
+    from app.services.musicbrainz import match_tracks_to_release
+
+    mb_tracks = [
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=2, track_number=1, track_total=2,
+            title="Opening Overture", length_ms=180000,
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=2, track_number=2, track_total=2,
+            title="Midnight Express", length_ms=245000,
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=2, disc_total=2, track_number=1, track_total=1,
+            title="Encore Finale", length_ms=312000,
+        ),
+    ]
+
+    local_tracks = [
+        # Disc 2 Track 1 with explicit disc tag
+        TrackMetadata(
+            path="d2t1.flac", filename="d2t1.flac", format="FLAC",
+            disc_number="2/2", track_number="1/1", title="Encore", duration=311.5,
+        ),
+        # No track number at all -> matched by title + duration
+        TrackMetadata(
+            path="midnight.flac", filename="midnight.flac", format="FLAC",
+            title="Midnight Express (Remastered)", duration=246.0,
+        ),
+        # Untitled & unnumbered -> matched unambiguously by duration (180s)
+        TrackMetadata(
+            path="untitled.flac", filename="TrackUnknown.flac", format="FLAC",
+            title=None, duration=181.0,
+        ),
+    ]
+
+    matches = match_tracks_to_release(local_tracks, mb_tracks)
+    assert matches[0].matched is True
+    assert matches[0].mb_disc_number == 2
+    assert matches[0].mb_track_number == 1
+    assert matches[0].match_method == "disc_track"
+
+    assert matches[1].matched is True
+    assert matches[1].mb_title == "Midnight Express"
+    assert matches[1].match_method == "title_duration"
+
+    assert matches[2].matched is True
+    assert matches[2].mb_title == "Opening Overture"
+    assert matches[2].match_method == "duration"
+
+
+
 
 
 

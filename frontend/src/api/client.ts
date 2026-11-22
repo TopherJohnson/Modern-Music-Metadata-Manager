@@ -11,6 +11,7 @@ import type {
   MusicBrainzApplyResponse,
   MusicBrainzApplyTrackPayload,
   MusicBrainzApplyTrackResponse,
+  MusicBrainzPreviewResponse,
   MusicBrainzReleaseCandidate,
   MusicBrainzTrackCandidate,
   NavidromeSyncResult,
@@ -216,6 +217,17 @@ export function searchMusicBrainz(
   return requestJson<MusicBrainzReleaseCandidate[]>(
     `/api/musicbrainz/search?${params.toString()}`
   );
+}
+
+export function previewMusicBrainzRelease(
+  mbid: string,
+  paths: string[]
+): Promise<MusicBrainzPreviewResponse> {
+  return requestJson<MusicBrainzPreviewResponse>("/api/musicbrainz/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mbid, paths }),
+  });
 }
 
 export function applyMusicBrainzRelease(

@@ -605,6 +605,11 @@ export function App() {
       setMbModal((prev) => ({ ...prev, open: false }));
 
       const details = [
+        payload.apply_track_titles && response.unmatched_paths.length > 0
+          ? `${response.unmatched_paths.length} unmatched ${
+              response.unmatched_paths.length === 1 ? "track" : "tracks"
+            } left with original title & track #.`
+          : null,
         response.artwork_note,
         formatNavidromeNote(response.navidrome_sync),
       ]
