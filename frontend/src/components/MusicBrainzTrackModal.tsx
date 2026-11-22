@@ -4,6 +4,7 @@ import {
   Check,
   Clock,
   Disc3,
+  ExternalLink,
   FileAudio,
   Globe,
   Loader2,
@@ -465,6 +466,30 @@ export function MusicBrainzTrackModal({
                         )}
                         {item.country && (
                           <span className="text-ink-muted">{item.country}</span>
+                        )}
+                        <a
+                          href={`https://musicbrainz.org/recording/${item.recording_mbid}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-0.5 rounded border border-border-subtle bg-surface px-1.5 py-0.5 text-ink-muted hover:border-accent/50 hover:text-accent transition-colors"
+                          title={`Open recording ${item.recording_mbid} on MusicBrainz`}
+                        >
+                          <ExternalLink className="h-2.5 w-2.5" />
+                          <span>Recording</span>
+                        </a>
+                        {item.release_mbid && (
+                          <a
+                            href={`https://musicbrainz.org/release/${item.release_mbid}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-0.5 rounded border border-border-subtle bg-surface px-1.5 py-0.5 text-ink-muted hover:border-accent/50 hover:text-accent transition-colors"
+                            title={`Open release ${item.release_mbid} on MusicBrainz`}
+                          >
+                            <ExternalLink className="h-2.5 w-2.5" />
+                            <span>Release</span>
+                          </a>
                         )}
                       </div>
                     </div>
