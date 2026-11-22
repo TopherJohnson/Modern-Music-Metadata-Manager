@@ -8,10 +8,13 @@ import uuid
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Response, UploadFile
 
 from app.models import (
+    AlbumMergeRequest,
+    AlbumMergeResponse,
     BulkUpdateError,
     BulkUpdateRequest,
     BulkUpdateResponse,
     CopyArtworkRequest,
+    OrganizeMoveResult,
     RawTagsResponse,
     TrackDeleteResponse,
     TrackMetadata,
@@ -20,7 +23,12 @@ from app.models import (
 )
 from app.routers._deps import resolve_library
 from app.services.navidrome import trigger_navidrome_scan
-from app.services.organizer import _TRACK_SIDECAR_EXTS, _prune_empty_parents
+from app.services.organizer import (
+    _TRACK_SIDECAR_EXTS,
+    _prune_empty_parents,
+    apply_organize_plan,
+)
+from app.services.scanner import scan_library
 from app.services.tags import (
     EDITABLE_FIELDS,
     InvalidTrackPathError,
@@ -263,6 +271,160 @@ async def put_tracks_bulk(
         updated=updated,
         errors=errors,
         navidrome_sync=navidrome_sync,
+    )
+
+
+_CANONICAL_ALBUM_FIELDS: tuple[str, ...] = (
+    "album",
+    "album_artist",
+    "year",
+    "release_date",
+    "genre",
+    "album_version",
+    "compilation",
+    "musicbrainz_album_id",
+    "musicbrainz_album_artist_id",
+)
+
+
+@router.post("/albums/merge", response_model=AlbumMergeResponse)
+async def merge_albums(
+    request: Request,
+    payload: AlbumMergeRequest,
+) -> AlbumMergeResponse:
+    """Merge multiple albums or move stray tracks into a unified canonical album.
+
+    Applies shared album & Navidrome PID tags, optional per-track disc/track number
+    overrides, optional cover art unification, and optional folder consolidation under
+    a single undoable audit batch.
+    """
+    settings = request.app.state.settings
+    db = request.app.state.db
+    lib = resolve_library(request)
+
+    shared_updates: dict[str, str | None] = {
+        field: getattr(payload, field)
+        for field in _CANONICAL_ALBUM_FIELDS
+        if field in payload.model_fields_set
+    }
+    shared_updates["album"] = payload.album.strip()
+
+    artwork: tuple[bytes, str] | None = None
+    if payload.artwork_source_path:
+        try:
+            artwork = read_track_artwork(lib.path, payload.artwork_source_path)
+        except Exception as exc:
+            _raise_http_for_tag_error(exc)
+        if artwork is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Selected artwork source track has no embedded cover image.",
+            )
+
+    target_paths = list(dict.fromkeys(payload.paths))
+    overrides_by_path = {ov.path: ov for ov in payload.track_overrides}
+    batch_id = uuid.uuid4().hex[:12] if len(target_paths) > 1 else None
+    art_batch_id = (
+        uuid.uuid4().hex[:12] if (artwork is not None and len(target_paths) > 1) else None
+    )
+
+    updated: list[TrackMetadata] = []
+    errors: list[BulkUpdateError] = []
+    artwork_applied = False
+
+    for rel_path in target_paths:
+        try:
+            file_updates = dict(shared_updates)
+            ov = overrides_by_path.get(rel_path)
+            if ov is not None:
+                if "track_number" in ov.model_fields_set:
+                    file_updates["track_number"] = ov.track_number
+                if "disc_number" in ov.model_fields_set:
+                    file_updates["disc_number"] = ov.disc_number
+
+            before, after = write_track_metadata(lib.path, rel_path, file_updates)
+            db.record_audit(
+                path=after.path,
+                action="merge_albums",
+                before_tags=_tag_snapshot(before),
+                after_tags=_tag_snapshot(after),
+                library_id=lib.id,
+                batch_id=batch_id,
+            )
+
+            if artwork is not None and rel_path != payload.artwork_source_path:
+                img_bytes, img_mime = artwork
+                after = write_track_artwork(
+                    lib.path,
+                    rel_path,
+                    img_bytes,
+                    mime_type=img_mime,
+                )
+                artwork_applied = True
+                db.record_audit(
+                    path=after.path,
+                    action="copy_artwork",
+                    before_tags={},
+                    after_tags={
+                        "source_path": payload.artwork_source_path,
+                        "artwork_hash": after.artwork_hash,
+                    },
+                    library_id=lib.id,
+                    batch_id=art_batch_id,
+                )
+
+            updated.append(after)
+        except Exception as exc:
+            errors.append(BulkUpdateError(path=rel_path, error=str(exc)))
+
+    if updated:
+        db.upsert_tracks(updated, library_id=lib.id)
+
+    moved: list[OrganizeMoveResult] = []
+    moved_sidecars: list[OrganizeMoveResult] = []
+    removed_empty_dirs = 0
+
+    if payload.reorganize and updated:
+        org_settings = db.get_organize_settings(library_id=lib.id)
+        all_tracks = scan_library(lib.path, db, library_id=lib.id)
+        moved, moved_sidecars, _skipped, move_errors, removed_empty_dirs = (
+            apply_organize_plan(
+                lib.path,
+                db,
+                all_tracks,
+                org_settings,
+                filter_paths=[t.path for t in updated],
+                library_id=lib.id,
+            )
+        )
+        errors.extend(move_errors)
+        if moved:
+            moved_map = {m.source_path: m.target_path for m in moved}
+            refreshed_updated: list[TrackMetadata] = []
+            for track in updated:
+                new_path = moved_map.get(track.path)
+                if new_path:
+                    try:
+                        refreshed_updated.append(read_track_metadata(lib.path, new_path))
+                        continue
+                    except Exception:
+                        pass
+                refreshed_updated.append(track)
+            updated = refreshed_updated
+
+    navidrome_sync = await trigger_navidrome_scan(
+        settings,
+        requested=payload.trigger_navidrome_scan and (bool(updated) or bool(moved)),
+    )
+    return AlbumMergeResponse(
+        updated=updated,
+        errors=errors,
+        navidrome_sync=navidrome_sync,
+        batch_id=batch_id,
+        artwork_applied=artwork_applied,
+        moved=moved,
+        moved_sidecars=moved_sidecars,
+        removed_empty_dirs=removed_empty_dirs,
     )
 
 

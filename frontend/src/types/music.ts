@@ -179,6 +179,37 @@ export interface BulkUpdateResponse {
   navidrome_sync: NavidromeSyncResult;
 }
 
+export interface TrackPositionOverride {
+  path: string;
+  track_number?: string | null;
+  disc_number?: string | null;
+}
+
+export interface AlbumMergePayload {
+  paths: string[];
+  album: string;
+  album_artist?: string | null;
+  year?: string | null;
+  release_date?: string | null;
+  genre?: string | null;
+  album_version?: string | null;
+  compilation?: string | null;
+  musicbrainz_album_id?: string | null;
+  musicbrainz_album_artist_id?: string | null;
+  track_overrides?: TrackPositionOverride[];
+  artwork_source_path?: string | null;
+  reorganize?: boolean;
+  trigger_navidrome_scan?: boolean;
+}
+
+export interface AlbumMergeResponse extends BulkUpdateResponse {
+  batch_id: string | null;
+  artwork_applied: boolean;
+  moved: OrganizeMoveResult[];
+  moved_sidecars: OrganizeMoveResult[];
+  removed_empty_dirs: number;
+}
+
 export interface MusicBrainzReleaseCandidate {
   mbid: string;
   title: string;

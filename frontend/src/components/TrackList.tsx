@@ -1,17 +1,23 @@
+import { useEffect, useState } from "react";
 import {
   AlertOctagon,
   AlertTriangle,
   ArrowLeft,
+  Check,
   CheckCircle2,
+  CheckSquare,
   Disc3,
+  FolderInput,
   FolderOpen,
   FolderTree,
+  GitMerge,
   Globe,
   Images,
   Layers,
   Music,
   RefreshCw,
   Trash2,
+  X,
 } from "lucide-react";
 import { formatDuration, getArtworkUrl } from "../api/client";
 import type { AlbumGroup, ArtistGroup, TrackMetadata } from "../types/music";
@@ -35,6 +41,12 @@ interface TrackListProps {
   onIdentifyAlbum: (album: AlbumGroup) => void;
   onIdentifyTrack: (track: TrackMetadata) => void;
   onDeleteTrack: (track: TrackMetadata) => void;
+  onMergeAlbums: (albums: AlbumGroup[]) => void;
+  onIdentifyCombinedAlbums: (albums: AlbumGroup[]) => void;
+  onMoveTracksToAlbum: (
+    tracks: TrackMetadata[],
+    sourceAlbumId: string | null
+  ) => void;
   onOrganizeAlbum: (album: AlbumGroup) => void;
   onChangeAlbumFilter: (filter: AlbumFilterMode) => void;
   onRescan: () => void;
@@ -93,10 +105,33 @@ export function TrackList({
   onIdentifyAlbum,
   onIdentifyTrack,
   onDeleteTrack,
+  onMergeAlbums,
+  onIdentifyCombinedAlbums,
+  onMoveTracksToAlbum,
   onOrganizeAlbum,
   onChangeAlbumFilter,
   onRescan,
 }: TrackListProps) {
+  const [albumSelectMode, setAlbumSelectMode] = useState(false);
+  const [checkedAlbumIds, setCheckedAlbumIds] = useState<string[]>([]);
+  const [checkedTrackPaths, setCheckedTrackPaths] = useState<string[]>([]);
+
+  useEffect(() => {
+    setCheckedTrackPaths([]);
+  }, [selectedAlbum?.id]);
+
+  useEffect(() => {
+    const validIds = new Set<string>();
+    for (const artist of artists) {
+      for (const album of artist.albums) {
+        validIds.add(album.id);
+      }
+    }
+    setCheckedAlbumIds((prev) => {
+      const filtered = prev.filter((id) => validIds.has(id));
+      return filtered.length === prev.length ? prev : filtered;
+    });
+  }, [artists]);
   if (loading) {
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-3 bg-canvas p-8 text-ink-secondary">
@@ -286,6 +321,33 @@ export function TrackList({
               </button>
             )}
 
+            {/* Multi-select Albums Toggle */}
+            <button
+              id="toggle-select-albums-btn"
+              type="button"
+              onClick={() => {
+                if (albumSelectMode || checkedAlbumIds.length > 0) {
+                  setAlbumSelectMode(false);
+                  setCheckedAlbumIds([]);
+                } else {
+                  setAlbumSelectMode(true);
+                }
+              }}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors cursor-pointer ${
+                albumSelectMode || checkedAlbumIds.length > 0
+                  ? "border-accent bg-accent-soft text-accent"
+                  : "border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
+              }`}
+              title="Select multiple albums to merge or identify together"
+            >
+              <CheckSquare className="h-3.5 w-3.5" />
+              <span>
+                {albumSelectMode || checkedAlbumIds.length > 0
+                  ? "Done Selecting"
+                  : "Select"}
+              </span>
+            </button>
+
             <span className="ml-1 font-mono text-xs text-ink-muted">
               {visibleAlbums.length}{" "}
               {visibleAlbums.length === 1 ? "album" : "albums"}
@@ -319,21 +381,56 @@ export function TrackList({
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+          <div
+            className={`grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 ${
+              checkedAlbumIds.length > 0 ? "pb-20" : ""
+            }`}
+          >
             {visibleAlbums.map(({ artist, album }) => {
               const splitCount = album.navidrome_warnings.filter(
                 (w) => w.severity === "split"
               ).length;
               const multiCovers = album.artwork_variants.length > 1;
+              const isChecked = checkedAlbumIds.includes(album.id);
+              const showCheckbox =
+                albumSelectMode || checkedAlbumIds.length > 0;
+
+              const toggleAlbumChecked = () => {
+                setCheckedAlbumIds((prev) =>
+                  prev.includes(album.id)
+                    ? prev.filter((id) => id !== album.id)
+                    : [...prev, album.id]
+                );
+              };
+
               return (
-                <button
+                <div
                   key={album.id}
-                  type="button"
-                  onClick={() => onSelectAlbum(artist, album)}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    if (albumSelectMode || checkedAlbumIds.length > 0) {
+                      toggleAlbumChecked();
+                    } else {
+                      onSelectAlbum(artist, album);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      if (albumSelectMode || checkedAlbumIds.length > 0) {
+                        toggleAlbumChecked();
+                      } else {
+                        onSelectAlbum(artist, album);
+                      }
+                    }
+                  }}
                   className={`group relative flex flex-col rounded-xl border bg-surface p-3 text-left transition-colors hover:bg-surface-elevated cursor-pointer ${
-                    album.has_missing_metadata
-                      ? "border-danger/45 hover:border-danger/70"
-                      : "border-border-subtle hover:border-border-strong"
+                    isChecked
+                      ? "border-accent bg-accent-soft/40 ring-1 ring-accent/40"
+                      : album.has_missing_metadata
+                        ? "border-danger/45 hover:border-danger/70"
+                        : "border-border-subtle hover:border-border-strong"
                   }`}
                 >
                   <div className="relative aspect-square w-full overflow-hidden rounded-lg">
@@ -343,6 +440,30 @@ export function TrackList({
                       revision={artworkRevision}
                       sizeClass="h-full w-full transition-transform duration-200 group-hover:scale-[1.02]"
                     />
+
+                    {/* Top-left multi-select checkbox */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleAlbumChecked();
+                      }}
+                      aria-label={
+                        isChecked
+                          ? `Deselect ${album.title}`
+                          : `Select ${album.title} for merging`
+                      }
+                      aria-pressed={isChecked}
+                      className={`absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border transition-opacity cursor-pointer ${
+                        isChecked
+                          ? "border-accent bg-accent text-[#14110c] opacity-100 shadow-sm"
+                          : showCheckbox
+                            ? "border-border-strong bg-canvas/85 text-transparent opacity-100 hover:border-accent"
+                            : "border-border-strong bg-canvas/85 text-transparent opacity-0 group-hover:opacity-100 focus:opacity-100 hover:border-accent"
+                      }`}
+                    >
+                      <Check className="h-3.5 w-3.5 stroke-[3]" />
+                    </button>
 
                     {/* Top-right status badges */}
                     <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
@@ -398,11 +519,87 @@ export function TrackList({
                       </span>
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
         )}
+
+        {/* Floating Multi-Album Action Bar */}
+        {checkedAlbumIds.length > 0 && (() => {
+          const selectedAlbums = allAlbums
+            .map((entry) => entry.album)
+            .filter((album) => checkedAlbumIds.includes(album.id));
+          const totalSelectedTracks = selectedAlbums.reduce(
+            (sum, a) => sum + a.track_count,
+            0
+          );
+          return (
+            <div
+              id="multi-album-action-bar"
+              className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-2xl border border-border-strong bg-surface/95 px-4 py-2.5 shadow-2xl backdrop-blur-sm"
+            >
+              <span className="text-xs font-medium text-ink-primary">
+                <strong>{selectedAlbums.length}</strong>{" "}
+                {selectedAlbums.length === 1 ? "album" : "albums"} selected{" "}
+                <span className="font-mono text-[11px] text-ink-muted">
+                  ({totalSelectedTracks}{" "}
+                  {totalSelectedTracks === 1 ? "track" : "tracks"})
+                </span>
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  id="floating-merge-albums-btn"
+                  type="button"
+                  disabled={selectedAlbums.length < 2}
+                  onClick={() => {
+                    onMergeAlbums(selectedAlbums);
+                    setAlbumSelectMode(false);
+                    setCheckedAlbumIds([]);
+                  }}
+                  className="m4-btn-primary h-8 px-3 text-xs"
+                  title={
+                    selectedAlbums.length < 2
+                      ? "Select at least 2 albums to merge"
+                      : "Merge selected albums into one unified album"
+                  }
+                >
+                  <GitMerge className="h-3.5 w-3.5" />
+                  Merge Albums
+                </button>
+
+                <button
+                  id="floating-identify-combined-btn"
+                  type="button"
+                  onClick={() => {
+                    onIdentifyCombinedAlbums(selectedAlbums);
+                    setAlbumSelectMode(false);
+                    setCheckedAlbumIds([]);
+                  }}
+                  className="m4-btn-secondary h-8 px-3 text-xs"
+                  title="Identify all selected tracks together via MusicBrainz"
+                >
+                  <Globe className="h-3.5 w-3.5 text-accent" />
+                  Identify Combined
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAlbumSelectMode(false);
+                    setCheckedAlbumIds([]);
+                  }}
+                  className="rounded-lg p-1.5 text-ink-muted hover:bg-surface-elevated hover:text-ink-primary cursor-pointer"
+                  title="Clear album selection"
+                  aria-label="Clear album selection"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          );
+        })()}
       </main>
     );
   }
@@ -624,21 +821,83 @@ export function TrackList({
 
       {/* Track Table */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
+        {checkedTrackPaths.length > 0 && (() => {
+          const chosenTracks = selectedAlbum.tracks.filter((t) =>
+            checkedTrackPaths.includes(t.path)
+          );
+          if (chosenTracks.length === 0) return null;
+          return (
+            <div
+              id="selected-tracks-action-bar"
+              className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-accent/40 bg-accent-soft/50 px-3.5 py-2 text-xs"
+            >
+              <span className="font-medium text-ink-primary">
+                {chosenTracks.length}{" "}
+                {chosenTracks.length === 1 ? "track" : "tracks"} selected
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  id="bulk-move-tracks-to-album-btn"
+                  type="button"
+                  onClick={() => {
+                    onMoveTracksToAlbum(chosenTracks, selectedAlbum.id);
+                    setCheckedTrackPaths([]);
+                  }}
+                  className="m4-btn-primary h-7 px-2.5 text-[11px]"
+                >
+                  <FolderInput className="h-3.5 w-3.5" />
+                  Move to Album…
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCheckedTrackPaths([])}
+                  className="m4-btn-secondary h-7 px-2 text-[11px]"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
         <table className="w-full border-collapse text-left">
           <thead>
             <tr className="border-b border-border-subtle text-[11px] font-medium uppercase tracking-wider text-ink-muted">
-              <th className="w-14 py-2 pl-3 pr-2 font-mono">#</th>
+              <th className="w-8 py-2 pl-2 pr-1">
+                <input
+                  type="checkbox"
+                  checked={
+                    selectedAlbum.tracks.length > 0 &&
+                    selectedAlbum.tracks.every((t) =>
+                      checkedTrackPaths.includes(t.path)
+                    )
+                  }
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setCheckedTrackPaths(
+                        selectedAlbum.tracks.map((t) => t.path)
+                      );
+                    } else {
+                      setCheckedTrackPaths([]);
+                    }
+                  }}
+                  aria-label="Select all tracks in album"
+                  className="h-3.5 w-3.5 accent-amber-500 cursor-pointer"
+                />
+              </th>
+              <th className="w-12 py-2 px-2 font-mono">#</th>
               <th className="py-2 px-2">Title</th>
               <th className="hidden md:table-cell py-2 px-2">Artist</th>
               <th className="hidden sm:table-cell w-24 py-2 px-2 text-right">Format</th>
               <th className="w-16 py-2 px-2 text-right">Time</th>
-              <th className="w-9 py-2 pl-1 pr-2 text-right" aria-label="Track actions" />
+              <th className="w-16 py-2 pl-1 pr-2 text-right" aria-label="Track actions" />
             </tr>
           </thead>
           <tbody className="divide-y divide-border-subtle/50 text-xs">
             {selectedAlbum.tracks.map((track) => {
               const isSelected =
                 !isBulkEditingAlbum && selectedTrackPath === track.path;
+              const isChecked = checkedTrackPaths.includes(track.path);
               const isMissingMajor = track.missing_fields.length > 0;
               const discPrefix =
                 track.disc_number && track.disc_number !== "1" && track.disc_number !== "1/1"
@@ -655,10 +914,32 @@ export function TrackList({
                   className={`group cursor-pointer transition-colors ${
                     isSelected
                       ? "bg-accent-soft/80 text-ink-primary"
-                      : "hover:bg-surface-elevated/70 text-ink-secondary"
+                      : isChecked
+                        ? "bg-accent-soft/40 text-ink-primary"
+                        : "hover:bg-surface-elevated/70 text-ink-secondary"
                   }`}
                 >
-                  <td className="py-2.5 pl-3 pr-2 font-mono text-[11px] text-ink-muted">
+                  <td
+                    className="py-2.5 pl-2 pr-1"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setCheckedTrackPaths((prev) => [...prev, track.path]);
+                        } else {
+                          setCheckedTrackPaths((prev) =>
+                            prev.filter((p) => p !== track.path)
+                          );
+                        }
+                      }}
+                      aria-label={`Select ${track.title || track.filename}`}
+                      className="h-3.5 w-3.5 accent-amber-500 cursor-pointer"
+                    />
+                  </td>
+                  <td className="py-2.5 px-2 font-mono text-[11px] text-ink-muted">
                     {trackNumLabel}
                   </td>
                   <td className="py-2.5 px-2">
@@ -727,22 +1008,40 @@ export function TrackList({
                     {formatDuration(track.duration)}
                   </td>
                   <td className="py-2.5 pl-1 pr-2 text-right">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteTrack(track);
-                      }}
-                      className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-danger/15 hover:text-danger cursor-pointer ${
-                        isSelected
-                          ? "opacity-80 hover:opacity-100"
-                          : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                      }`}
-                      title={`Delete ${track.filename} from disk`}
-                      aria-label={`Delete ${track.title || track.filename}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <div className="inline-flex items-center justify-end gap-0.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMoveTracksToAlbum([track], selectedAlbum.id);
+                        }}
+                        className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-surface-elevated hover:text-accent cursor-pointer ${
+                          isSelected
+                            ? "opacity-80 hover:opacity-100"
+                            : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        }`}
+                        title={`Move ${track.filename} to another album`}
+                        aria-label={`Move ${track.title || track.filename} to another album`}
+                      >
+                        <FolderInput className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteTrack(track);
+                        }}
+                        className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-danger/15 hover:text-danger cursor-pointer ${
+                          isSelected
+                            ? "opacity-80 hover:opacity-100"
+                            : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        }`}
+                        title={`Delete ${track.filename} from disk`}
+                        aria-label={`Delete ${track.title || track.filename}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

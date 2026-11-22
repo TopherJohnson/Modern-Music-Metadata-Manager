@@ -1,4 +1,6 @@
 import type {
+  AlbumMergePayload,
+  AlbumMergeResponse,
   AuditEntry,
   AuthStatusResponse,
   BatchUndoResponse,
@@ -161,6 +163,16 @@ export function updateTracksBulk(
 ): Promise<BulkUpdateResponse> {
   return requestJson<BulkUpdateResponse>("/api/tracks/bulk", {
     method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function mergeAlbums(
+  payload: AlbumMergePayload
+): Promise<AlbumMergeResponse> {
+  return requestJson<AlbumMergeResponse>("/api/albums/merge", {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });

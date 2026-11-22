@@ -6,6 +6,7 @@ import {
   Code2,
   Disc3,
   FileAudio,
+  FolderInput,
   Globe,
   Images,
   Layers,
@@ -40,6 +41,7 @@ interface MetadataEditorProps {
   onOpenMusicBrainz: (mode: MusicBrainzModalMode, targetPaths: string[]) => void;
   onIdentifyTrack: (track: TrackMetadata) => void;
   onDeleteTrack: (track: TrackMetadata) => void;
+  onMoveTrackToAlbum: (track: TrackMetadata) => void;
 }
 
 interface FieldSpec {
@@ -164,6 +166,7 @@ export function MetadataEditor({
   onOpenMusicBrainz,
   onIdentifyTrack,
   onDeleteTrack,
+  onMoveTrackToAlbum,
 }: MetadataEditorProps) {
   const isBulk = bulkAlbum !== null;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -853,17 +856,31 @@ export function MetadataEditor({
                   <span>{formatFileSize(selectedTrack.file_size)}</span>
                 </div>
 
-                <button
-                  id="editor-delete-track-btn"
-                  type="button"
-                  disabled={saving}
-                  onClick={() => onDeleteTrack(selectedTrack)}
-                  className="inline-flex items-center gap-1 rounded-md border border-danger/35 bg-danger/10 px-2 py-1 text-[10px] font-medium text-danger transition-colors hover:bg-danger/20 disabled:opacity-50 cursor-pointer"
-                  title="Permanently delete this track file from disk"
-                >
-                  <Trash2 className="h-3 w-3" />
-                  Delete File
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    id="editor-move-track-btn"
+                    type="button"
+                    disabled={saving}
+                    onClick={() => onMoveTrackToAlbum(selectedTrack)}
+                    className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-surface px-2 py-1 text-[10px] font-medium text-ink-secondary transition-colors hover:border-border-strong hover:text-ink-primary disabled:opacity-50 cursor-pointer"
+                    title="Move this track into another existing album"
+                  >
+                    <FolderInput className="h-3 w-3 text-accent" />
+                    Move to Album
+                  </button>
+
+                  <button
+                    id="editor-delete-track-btn"
+                    type="button"
+                    disabled={saving}
+                    onClick={() => onDeleteTrack(selectedTrack)}
+                    className="inline-flex items-center gap-1 rounded-md border border-danger/35 bg-danger/10 px-2 py-1 text-[10px] font-medium text-danger transition-colors hover:bg-danger/20 disabled:opacity-50 cursor-pointer"
+                    title="Permanently delete this track file from disk"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Delete File
+                  </button>
+                </div>
               </div>
 
               {showRawTags && (

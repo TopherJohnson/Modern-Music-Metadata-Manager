@@ -82,7 +82,13 @@ _TRACK_CACHE_MIGRATIONS: tuple[tuple[str, str], ...] = (
 )
 
 _UNDOABLE_TAG_ACTIONS: frozenset[str] = frozenset(
-    {"update_track", "bulk_update", "musicbrainz_apply", "musicbrainz_apply_track"}
+    {
+        "update_track",
+        "bulk_update",
+        "merge_albums",
+        "musicbrainz_apply",
+        "musicbrainz_apply_track",
+    }
 )
 _UNDOABLE_ACTIONS: frozenset[str] = _UNDOABLE_TAG_ACTIONS | {"move_track"}
 

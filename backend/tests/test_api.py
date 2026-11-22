@@ -1105,6 +1105,146 @@ def test_musicbrainz_matcher_title_duration_and_multidisc() -> None:
     assert matches[2].match_method == "duration"
 
 
+def test_merge_multiple_albums_and_single_batch_undo(client: TestClient) -> None:
+    """Issue #4: merge 3 split albums (incl. stray track), unify PID tags + artwork + folder, and undo in one batch."""
+    from app.services.tags import write_track_artwork, write_track_metadata
+
+    music_dir = client.app.state.settings.music_dir
+
+    # Create 3 separate albums (mirroring Issue #4's 3-way split example)
+    p1 = "Stevie Wonder/Song Review - Hits/01 - Superstition.mp3"
+    p2 = "Stevie Wonder/Song Review (Hits)/02 - Sir Duke.mp3"
+    p3 = "Stevie Wonder/Stray Singles/01 - Isnt She Lovely.mp3"
+    for p in (p1, p2, p3):
+        _create_minimal_mp3(music_dir / p)
+
+    write_track_metadata(
+        music_dir,
+        p1,
+        {
+            "title": "Superstition",
+            "artist": "Stevie Wonder",
+            "album_artist": "Stevie Wonder",
+            "album": "Song Review - A Greatest Hits Collection",
+            "year": "1996",
+            "track_number": "1",
+            "musicbrainz_album_id": "aaaa1111-1111-1111-1111-111111111111",
+        },
+    )
+    write_track_artwork(music_dir, p1, TINY_PNG, mime_type="image/png")
+
+    write_track_metadata(
+        music_dir,
+        p2,
+        {
+            "title": "Sir Duke",
+            "artist": "Stevie Wonder",
+            "album_artist": "Stevie Wonder",
+            "album": "Song Review (A Greatest Hits Collection)",
+            "year": "1996",
+            "track_number": "2",
+            "album_version": "UK Edition",
+            "musicbrainz_album_id": "bbbb2222-2222-2222-2222-222222222222",
+        },
+    )
+
+    write_track_metadata(
+        music_dir,
+        p3,
+        {
+            "title": "Isn't She Lovely",
+            "artist": "Stevie Wonder",
+            "album_artist": "Stevie Wonder",
+            "album": "Random Singles",
+            "year": "1976",
+            "track_number": "1",  # collides with p1 before override!
+        },
+    )
+
+    # Confirm 3 distinct Stevie Wonder albums exist before merge
+    lib_before = client.get("/api/library", params={"rescan": True}).json()
+    sw_before = next(a for a in lib_before["artists"] if a["name"] == "Stevie Wonder")
+    assert sw_before["album_count"] == 3
+
+    # Enable folder organization to test optional folder consolidation
+    client.put(
+        "/api/settings/organize",
+        json={
+            "enabled": True,
+            "template": "artist_album",
+            "rename_files": False,
+            "compilation_folder": "Various Artists",
+            "cleanup_empty_dirs": True,
+            "skip_missing_metadata": True,
+            "move_sidecars": True,
+        },
+    )
+
+    # Merge all 3 albums: unify album/PID tags (clearing album_version!), fix colliding track # on p3,
+    # unify cover art from p1, and consolidate folders
+    merge_res = client.post(
+        "/api/albums/merge",
+        json={
+            "paths": [p1, p2, p3],
+            "album": "Song Review: A Greatest Hits Collection",
+            "album_artist": "Stevie Wonder",
+            "year": "1996",
+            "release_date": None,
+            "genre": "Soul",
+            "album_version": None,
+            "compilation": None,
+            "musicbrainz_album_id": "aaaa1111-1111-1111-1111-111111111111",
+            "musicbrainz_album_artist_id": None,
+            "track_overrides": [
+                {"path": p1, "track_number": "1/3", "disc_number": "1/1"},
+                {"path": p2, "track_number": "2/3", "disc_number": "1/1"},
+                {"path": p3, "track_number": "3/3", "disc_number": "1/1"},
+            ],
+            "artwork_source_path": p1,
+            "reorganize": True,
+        },
+    )
+    assert merge_res.status_code == 200
+    body = merge_res.json()
+    assert len(body["updated"]) == 3
+    assert body["errors"] == []
+    assert body["artwork_applied"] is True
+    assert body["batch_id"] is not None
+    assert len(body["moved"]) == 3
+    assert body["removed_empty_dirs"] >= 3
+
+    # All 3 tracks are now unified under ONE album with zero Navidrome split/artwork warnings
+    lib_after = client.get("/api/library").json()
+    sw_after = next(a for a in lib_after["artists"] if a["name"] == "Stevie Wonder")
+    assert sw_after["album_count"] == 1
+    merged_album = sw_after["albums"][0]
+    assert merged_album["title"] == "Song Review: A Greatest Hits Collection"
+    assert merged_album["track_count"] == 3
+    assert merged_album["navidrome_warnings"] == []
+    assert len(merged_album["artwork_variants"]) == 1
+    assert [t["track_number"] for t in merged_album["tracks"]] == ["1/3", "2/3", "3/3"]
+    assert all(t["album_version"] is None for t in merged_album["tracks"])
+    assert all(
+        t["musicbrainz_album_id"] == "aaaa1111-1111-1111-1111-111111111111"
+        for t in merged_album["tracks"]
+    )
+
+    # First undo the move batch, then undo the single merge_albums tag batch -> restores all 3 albums!
+    history = client.get("/api/history").json()
+    move_batch_id = next(e["batch_id"] for e in history if e["action"] == "move_track")
+    tag_batch_id = body["batch_id"]
+
+    assert client.post(f"/api/history/batch/{move_batch_id}/undo").status_code == 200
+    undo_tags_res = client.post(f"/api/history/batch/{tag_batch_id}/undo")
+    assert undo_tags_res.status_code == 200
+    assert undo_tags_res.json()["undone_count"] == 3
+
+    lib_reverted = client.get("/api/library").json()
+    sw_reverted = next(a for a in lib_reverted["artists"] if a["name"] == "Stevie Wonder")
+    assert sw_reverted["album_count"] == 3
+
+
+
 
 
 

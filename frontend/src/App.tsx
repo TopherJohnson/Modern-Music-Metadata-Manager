@@ -14,6 +14,7 @@ import {
   getOrganizeSettings,
   getTrack,
   logout,
+  mergeAlbums,
   saveOrganizeSettings,
   setActiveLibraryId as setApiLibraryId,
   setUnauthorizedHandler,
@@ -29,7 +30,9 @@ import { DeleteTrackModal } from "./components/DeleteTrackModal";
 import { Header } from "./components/Header";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LoginScreen } from "./components/LoginScreen";
+import { MergeAlbumsModal } from "./components/MergeAlbumsModal";
 import { MetadataEditor } from "./components/MetadataEditor";
+import { MoveTracksToAlbumModal } from "./components/MoveTracksToAlbumModal";
 import {
   MusicBrainzModal,
   type MusicBrainzModalMode,
@@ -41,6 +44,7 @@ import { Toast, type ToastMessage } from "./components/Toast";
 import { TrackList, type AlbumFilterMode } from "./components/TrackList";
 import type {
   AlbumGroup,
+  AlbumMergePayload,
   ArtistGroup,
   AuditEntry,
   AuthStatusResponse,
@@ -148,6 +152,12 @@ export function App() {
   const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TrackMetadata | null>(null);
   const [deletingTrack, setDeletingTrack] = useState(false);
+  const [mergeAlbumsTarget, setMergeAlbumsTarget] = useState<AlbumGroup[]>([]);
+  const [moveTracksTarget, setMoveTracksTarget] = useState<{
+    tracks: TrackMetadata[];
+    sourceAlbumId: string | null;
+  }>({ tracks: [], sourceAlbumId: null });
+  const [mergingAlbums, setMergingAlbums] = useState(false);
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -941,6 +951,130 @@ export function App() {
     }
   };
 
+  const allFlatAlbums = useMemo<AlbumGroup[]>(
+    () => artists.flatMap((artist) => artist.albums),
+    [artists]
+  );
+
+  const handleIdentifyCombinedAlbums = (albums: AlbumGroup[]) => {
+    if (albums.length === 0) return;
+    const sorted = [...albums].sort((a, b) => b.track_count - a.track_count);
+    const primary = sorted[0];
+    const combinedPaths = Array.from(
+      new Set(albums.flatMap((a) => a.tracks.map((t) => t.path)))
+    );
+    setMergeAlbumsTarget([]);
+    setMbModal({
+      open: true,
+      mode: "identify",
+      album: primary.title === "Unknown Album" ? "" : primary.title,
+      artist: primary.artist === "Unknown Artist" ? "" : primary.artist,
+      targetPaths: combinedPaths,
+      localTrackCount: combinedPaths.length,
+    });
+  };
+
+  const handleIdentifyCombinedFromMerge = (
+    albumHint: string,
+    artistHint: string,
+    paths: string[]
+  ) => {
+    setMergeAlbumsTarget([]);
+    setMbModal({
+      open: true,
+      mode: "identify",
+      album: albumHint === "Unknown Album" ? "" : albumHint,
+      artist: artistHint === "Unknown Artist" ? "" : artistHint,
+      targetPaths: paths,
+      localTrackCount: paths.length,
+    });
+  };
+
+  const handleConfirmMergeOrMove = async (
+    payload: AlbumMergePayload,
+    mode: "merge" | "move"
+  ) => {
+    setMergingAlbums(true);
+    try {
+      const response = await mergeAlbums(payload);
+      setMergeAlbumsTarget([]);
+      setMoveTracksTarget({ tracks: [], sourceAlbumId: null });
+      setArtworkRevision((r) => r + 1);
+      setIsBulkMode(false);
+
+      const updatedLib = await fetchLibrary(debouncedQuery, { silent: true });
+      if (updatedLib && response.updated.length > 0) {
+        const relocated = findAlbumAndTrackByPath(
+          updatedLib.artists,
+          response.updated[0].path
+        );
+        if (relocated) {
+          setSelectedAlbumId(relocated.album.id);
+          if (selectedTrackPath) {
+            const movedTrack = response.updated.find(
+              (t) => t.path === selectedTrackPath
+            );
+            if (movedTrack) {
+              setLiveTrack(movedTrack);
+            } else {
+              setSelectedTrackPath(null);
+              setLiveTrack(null);
+            }
+          }
+        }
+      }
+
+      const details = [
+        response.artwork_applied ? "Unified cover art." : null,
+        response.moved.length > 0
+          ? `Moved ${response.moved.length} ${
+              response.moved.length === 1 ? "file" : "files"
+            }.`
+          : null,
+        response.removed_empty_dirs > 0
+          ? `Removed ${response.removed_empty_dirs} empty ${
+              response.removed_empty_dirs === 1 ? "folder" : "folders"
+            }.`
+          : null,
+        formatNavidromeNote(response.navidrome_sync),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (response.errors.length > 0) {
+        showToast(
+          "error",
+          `${mode === "merge" ? "Merged" : "Moved"} ${response.updated.length} tracks (${response.errors.length} failed)`,
+          response.errors[0].error
+        );
+      } else {
+        showToast(
+          "success",
+          mode === "merge"
+            ? `Merged ${response.updated.length} tracks into "${payload.album}"`
+            : `Moved ${response.updated.length} ${
+                response.updated.length === 1 ? "track" : "tracks"
+              } into "${payload.album}"`,
+          details || undefined
+        );
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : mode === "merge"
+            ? "Album merge failed"
+            : "Move to album failed";
+      showToast(
+        "error",
+        mode === "merge" ? "Merge failed" : "Move failed",
+        msg
+      );
+    } finally {
+      setMergingAlbums(false);
+    }
+  };
+
   if (authStatus === null) {
     return (
       <div className="flex h-full min-h-screen items-center justify-center bg-canvas text-xs text-ink-secondary">
@@ -1008,6 +1142,11 @@ export function App() {
           onIdentifyAlbum={handleIdentifyAlbum}
           onIdentifyTrack={handleIdentifyTrack}
           onDeleteTrack={(track) => setDeleteTarget(track)}
+          onMergeAlbums={(albums) => setMergeAlbumsTarget(albums)}
+          onIdentifyCombinedAlbums={handleIdentifyCombinedAlbums}
+          onMoveTracksToAlbum={(tracks, sourceAlbumId) =>
+            setMoveTracksTarget({ tracks, sourceAlbumId })
+          }
           onOrganizeAlbum={handleOrganizeAlbum}
           onChangeAlbumFilter={setAlbumFilter}
           onRescan={handleRescan}
@@ -1028,6 +1167,12 @@ export function App() {
           onOpenMusicBrainz={handleOpenMusicBrainz}
           onIdentifyTrack={handleIdentifyTrack}
           onDeleteTrack={(track) => setDeleteTarget(track)}
+          onMoveTrackToAlbum={(track) =>
+            setMoveTracksTarget({
+              tracks: [track],
+              sourceAlbumId: selectedAlbum?.id ?? null,
+            })
+          }
         />
       </div>
 
@@ -1079,6 +1224,29 @@ export function App() {
         deleting={deletingTrack}
         onClose={() => setDeleteTarget(null)}
         onConfirm={handleConfirmDeleteTrack}
+      />
+
+      <MergeAlbumsModal
+        open={mergeAlbumsTarget.length > 0}
+        initialAlbums={mergeAlbumsTarget}
+        allAlbums={allFlatAlbums}
+        artworkRevision={artworkRevision}
+        organizeSettings={organizeSettings}
+        merging={mergingAlbums}
+        onClose={() => setMergeAlbumsTarget([])}
+        onMerge={(payload) => handleConfirmMergeOrMove(payload, "merge")}
+        onIdentifyCombinedMusicBrainz={handleIdentifyCombinedFromMerge}
+      />
+
+      <MoveTracksToAlbumModal
+        tracks={moveTracksTarget.tracks}
+        sourceAlbumId={moveTracksTarget.sourceAlbumId}
+        allAlbums={allFlatAlbums}
+        artworkRevision={artworkRevision}
+        organizeSettings={organizeSettings}
+        moving={mergingAlbums}
+        onClose={() => setMoveTracksTarget({ tracks: [], sourceAlbumId: null })}
+        onConfirmMove={(payload) => handleConfirmMergeOrMove(payload, "move")}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />

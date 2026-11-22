@@ -80,6 +80,7 @@ All library/track/history/organize endpoints target the default library unless s
 | `PUT` | `/api/track` | Write updated tags to a single track (and optionally trigger Navidrome scan) |
 | `DELETE` | `/api/track?path=` | Permanently delete a single track file (plus optional matching `.lrc`/`.txt` sidecars and empty parent folders) |
 | `PUT` | `/api/tracks/bulk` | Batch-update shared tags across multiple tracks (grouped under one `batch_id`) |
+| `POST` | `/api/albums/merge` | Merge multiple albums or move stray tracks into a unified canonical album (+ cover art, track overrides, optional folder consolidation, single-batch undo) |
 | `GET` | `/api/track/artwork?path=` | Serve embedded front cover art for a track |
 | `PUT` | `/api/track/artwork` | Embed or replace cover art on one or more tracks |
 | `POST` | `/api/track/artwork/copy` | Copy an existing album track's embedded cover art onto target tracks |

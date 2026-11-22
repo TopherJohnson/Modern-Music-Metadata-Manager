@@ -39,6 +39,7 @@ const ACTION_META: Record<
 > = {
   update_track: { label: "Tag Edit", kind: "tag" },
   bulk_update: { label: "Bulk Edit", batchLabel: "Bulk Tag Edit", kind: "tag" },
+  merge_albums: { label: "Album Merge", batchLabel: "Album Merge", kind: "tag" },
   musicbrainz_apply: {
     label: "MusicBrainz Album",
     batchLabel: "MusicBrainz Album Match",

@@ -192,6 +192,43 @@ class BulkUpdateResponse(BaseModel):
     navidrome_sync: NavidromeSyncResult
 
 
+class TrackPositionOverride(BaseModel):
+    """Optional per-track disc/track number override applied during an album merge or move."""
+
+    path: str
+    track_number: str | None = None
+    disc_number: str | None = None
+
+
+class AlbumMergeRequest(BaseModel):
+    """Merge multiple albums or move stray tracks into a unified canonical album."""
+
+    paths: list[str] = Field(..., min_length=1)
+    album: str = Field(..., min_length=1)
+    album_artist: str | None = None
+    year: str | None = None
+    release_date: str | None = None
+    genre: str | None = None
+    album_version: str | None = None
+    compilation: str | None = None
+    musicbrainz_album_id: str | None = None
+    musicbrainz_album_artist_id: str | None = None
+    track_overrides: list[TrackPositionOverride] = Field(default_factory=list)
+    artwork_source_path: str | None = None
+    reorganize: bool = False
+    trigger_navidrome_scan: bool = True
+
+
+class AlbumMergeResponse(BulkUpdateResponse):
+    """Outcome of merging albums or moving tracks into a canonical album."""
+
+    batch_id: str | None = None
+    artwork_applied: bool = False
+    moved: list["OrganizeMoveResult"] = Field(default_factory=list)
+    moved_sidecars: list["OrganizeMoveResult"] = Field(default_factory=list)
+    removed_empty_dirs: int = 0
+
+
 class ArtworkVariant(BaseModel):
     """Distinct embedded cover image found across one or more tracks in an album."""
 
@@ -515,4 +552,7 @@ class OrganizeApplyResponse(BaseModel):
     errors: list[BulkUpdateError] = Field(default_factory=list)
     removed_empty_dirs: int = 0
     navidrome_sync: NavidromeSyncResult
+
+
+AlbumMergeResponse.model_rebuild()
 
