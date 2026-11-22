@@ -4,6 +4,9 @@ A lightweight, self-hosted web application designed as a companion to **[Navidro
 
 M⁴ ships as a **single Docker container** (FastAPI backend + compiled React/Vite/Tailwind CSS frontend) that reads and writes audio tags directly in your music mounts using `mutagen`, storing only a fast mtime/size scan cache, per-library settings, and batch-undoable edit history in `/config/m4.db`.
 
+> [!NOTE]
+> **Disclaimer:** This project is **100% vibe coded** with AI assistance. Because M⁴ edits audio metadata and moves files directly on disk, keep backups of your music library and use at your own risk!
+
 ---
 
 ## Features
