@@ -8,7 +8,7 @@ services:
     container_name: m4-metadata-manager
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "3333:3333"
     volumes:
       # Replace `/path/to/music` with your host music directory (read-write)
       - /path/to/music:/music
@@ -37,7 +37,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import sys, urllib.request; r = urllib.request.urlopen('http://localhost:8080/api/health', timeout=4); sys.exit(0 if r.status == 200 else 1)",
+          "import sys, urllib.request; r = urllib.request.urlopen('http://localhost:3333/api/health', timeout=4); sys.exit(0 if r.status == 200 else 1)",
         ]
       interval: 30s
       timeout: 5s

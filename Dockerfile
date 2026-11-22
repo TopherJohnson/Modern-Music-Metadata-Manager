@@ -48,12 +48,12 @@ COPY --from=frontend-builder --chown=m4:m4 /build/frontend/dist ./static
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-EXPOSE 8080
+EXPOSE 3333
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import sys, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4); sys.exit(0 if r.status == 200 else 1)"
+    CMD python -c "import sys, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:3333/api/health', timeout=4); sys.exit(0 if r.status == 200 else 1)"
 
 # Entrypoint remaps the non-root `m4` user to PUID/PGID and drops privileges with gosu.
 # Containers launched with `--user UID:GID` are also supported and skip privilege drop.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3333", "--proxy-headers"]

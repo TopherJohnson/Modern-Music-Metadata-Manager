@@ -35,7 +35,7 @@ docker compose pull && docker compose up -d
 
 *(Pin a specific release such as `ghcr.io/topherjohnson/modern-music-metadata-manager:0.5.0`, or uncomment the `build:` block in `docker-compose.yml` to build locally from source.)*
 
-3. Open the web UI at `http://localhost:8080` (or verify container health at `http://localhost:8080/api/health`).
+3. Open the web UI at `http://localhost:3333` (or verify container health at `http://localhost:3333/api/health`).
 
 ---
 
@@ -103,7 +103,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-M4_MUSIC_DIR=/path/to/music M4_CONFIG_DIR=../config uvicorn app.main:app --reload --port 8080
+M4_MUSIC_DIR=/path/to/music M4_CONFIG_DIR=../config uvicorn app.main:app --reload --port 3333
 ```
 
 ### Frontend
@@ -112,4 +112,4 @@ cd frontend
 npm install
 npm run dev
 ```
-Vite runs on `http://localhost:5173` and automatically proxies `/api/*` requests to FastAPI on port `8080`.
+Vite runs on `http://localhost:5173` and automatically proxies `/api/*` requests to FastAPI on port `3333`.
