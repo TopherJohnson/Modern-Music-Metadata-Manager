@@ -11,7 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.models import AuditEntry, MusicBrainzReleaseDetail, OrganizeSettings, TrackMetadata
+from app.models import (
+    AuditEntry,
+    IntegrationSettingsStored,
+    MusicBrainzReleaseDetail,
+    OrganizeSettings,
+    TrackMetadata,
+)
 
 
 TRACK_CACHE_DDL = """
@@ -115,7 +121,10 @@ _UNDOABLE_TAG_ACTIONS: frozenset[str] = frozenset(
         "musicbrainz_apply_track",
     }
 )
-_UNDOABLE_ACTIONS: frozenset[str] = _UNDOABLE_TAG_ACTIONS | {"move_track"}
+_UNDOABLE_ACTIONS: frozenset[str] = _UNDOABLE_TAG_ACTIONS | {
+    "move_track",
+    "import_from_staging",
+}
 
 
 class Database:
@@ -201,7 +210,9 @@ class Database:
             return 0
         with self._connect() as conn:
             if library_id is None:
-                row = conn.execute("SELECT COUNT(*) AS cnt FROM track_cache").fetchone()
+                row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM track_cache WHERE library_id != '__staging__'"
+                ).fetchone()
             else:
                 row = conn.execute(
                     "SELECT COUNT(*) AS cnt FROM track_cache WHERE library_id = ?",
@@ -436,7 +447,11 @@ class Database:
             not undone
             and action in _UNDOABLE_ACTIONS
             and (
-                (action == "move_track" and bool(before.get("path")) and bool(after.get("path")))
+                (
+                    action in {"move_track", "import_from_staging"}
+                    and bool(before.get("path"))
+                    and bool(after.get("path"))
+                )
                 or (action in _UNDOABLE_TAG_ACTIONS and bool(changed_fields))
             )
         )
@@ -492,6 +507,38 @@ class Database:
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
                 """,
                 (scoped_key, payload),
+            )
+        return settings
+
+    def get_integration_settings(self) -> IntegrationSettingsStored | None:
+        """Load persisted in-app integration overrides (slskd & Navidrome) from app_settings."""
+        if not self.db_path.exists():
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                ("integration_settings",),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            return IntegrationSettingsStored.model_validate_json(row["value"])
+        except Exception:
+            return None
+
+    def save_integration_settings(
+        self,
+        settings: IntegrationSettingsStored,
+    ) -> IntegrationSettingsStored:
+        """Persist in-app integration overrides in app_settings."""
+        payload = settings.model_dump_json()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                ("integration_settings", payload),
             )
         return settings
 

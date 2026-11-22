@@ -3,12 +3,14 @@ import {
   AlertOctagon,
   AlertTriangle,
   ArrowLeft,
+  ArrowRight,
   Check,
   CheckCircle2,
   CheckSquare,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CloudDownload,
   Disc3,
   Eye,
   EyeOff,
@@ -20,6 +22,7 @@ import {
   Globe,
   ImagePlus,
   Images,
+  Inbox,
   Layers,
   ListChecks,
   Loader2,
@@ -45,6 +48,7 @@ import type {
   ArtistGroup,
   MissingTrackCandidate,
   MissingTrackItem,
+  StagingImportPreviewResponse,
   TrackMetadata,
 } from "../types/music";
 
@@ -55,6 +59,12 @@ interface TrackListProps {
   selectedAlbum: AlbumGroup | null;
   selectedTrackPath: string | null;
   isBulkEditingAlbum: boolean;
+  isStagingMode?: boolean;
+  stagingAlbumPreview?: StagingImportPreviewResponse | null;
+  stagingPreviewLoading?: boolean;
+  onImportFromStaging?: (scopeLabel: string | null, paths: string[] | null) => void;
+  slskdConfigured?: boolean;
+  onSearchSlskd?: (album: AlbumGroup, item: MissingTrackItem | null) => void;
   albumFilter: AlbumFilterMode;
   missingField: MissingFieldKey | null;
   missingScope: MissingScopeMode;
@@ -158,6 +168,12 @@ export function TrackList({
   selectedAlbum,
   selectedTrackPath,
   isBulkEditingAlbum,
+  isStagingMode = false,
+  stagingAlbumPreview = null,
+  stagingPreviewLoading = false,
+  onImportFromStaging,
+  slskdConfigured = false,
+  onSearchSlskd,
   albumFilter,
   missingField,
   missingScope,
@@ -251,19 +267,46 @@ export function TrackList({
   if (allAlbums.length === 0) {
     return (
       <main className="flex flex-1 flex-col items-center justify-center bg-canvas p-8 text-center">
-        <div className="max-w-sm rounded-xl border border-border-subtle bg-surface p-6">
-          <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-border-strong bg-surface-elevated text-accent">
-            <FolderOpen className="h-5 w-5" />
+        <div
+          className={`max-w-sm rounded-xl border bg-surface p-6 ${
+            isStagingMode ? "border-cyan-500/40" : "border-border-subtle"
+          }`}
+        >
+          <div
+            className={`mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl border ${
+              isStagingMode
+                ? "border-cyan-500/40 bg-cyan-950/50 text-cyan-300"
+                : "border-border-strong bg-surface-elevated text-accent"
+            }`}
+          >
+            {isStagingMode ? (
+              <Inbox className="h-5 w-5" />
+            ) : (
+              <FolderOpen className="h-5 w-5" />
+            )}
           </div>
           <h2 className="text-sm font-semibold text-ink-primary">
-            No audio files found
+            {isStagingMode ? "Staging / Inbox is empty" : "No audio files found"}
           </h2>
           <p className="mt-1.5 text-xs leading-relaxed text-ink-secondary">
-            Mount your music library at{" "}
-            <code className="rounded bg-canvas px-1.5 py-0.5 font-mono text-[11px] text-ink-primary">
-              {musicDir}
-            </code>{" "}
-            or clear your search filter. Supports MP3, FLAC, M4A, OGG, and OPUS.
+            {isStagingMode ? (
+              <>
+                Drop downloaded audio files into{" "}
+                <code className="rounded bg-canvas px-1.5 py-0.5 font-mono text-[11px] text-cyan-300">
+                  {musicDir}
+                </code>{" "}
+                (or download missing tracks via slskd), then click Rescan to
+                tag and import them into your library.
+              </>
+            ) : (
+              <>
+                Mount your music library at{" "}
+                <code className="rounded bg-canvas px-1.5 py-0.5 font-mono text-[11px] text-ink-primary">
+                  {musicDir}
+                </code>{" "}
+                or clear your search filter. Supports MP3, FLAC, M4A, OGG, and OPUS.
+              </>
+            )}
           </p>
           <button
             type="button"
@@ -271,7 +314,7 @@ export function TrackList({
             className="m4-btn-primary mt-4"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Rescan Library
+            {isStagingMode ? "Rescan Staging" : "Rescan Library"}
           </button>
         </div>
       </main>
@@ -342,10 +385,12 @@ export function TrackList({
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold tracking-tight text-ink-primary">
-              Library Albums
+              {isStagingMode ? "Staged Downloads" : "Library Albums"}
             </h2>
             <p className="mt-0.5 text-xs text-ink-muted">
-              Select an album to inspect tracks or batch-edit tags
+              {isStagingMode
+                ? "Inspect, identify, and clean tags before moving files into your music library"
+                : "Select an album to inspect tracks or batch-edit tags"}
             </p>
           </div>
 
@@ -996,6 +1041,30 @@ export function TrackList({
               </span>
 
               <div className="flex flex-wrap items-center gap-2">
+                {isStagingMode && onImportFromStaging && (
+                  <button
+                    id="floating-staging-import-btn"
+                    type="button"
+                    onClick={() => {
+                      const paths = selectedAlbums.flatMap((a) =>
+                        a.tracks.map((t) => t.path)
+                      );
+                      onImportFromStaging(
+                        `${selectedAlbums.length} selected ${
+                          selectedAlbums.length === 1 ? "album" : "albums"
+                        }`,
+                        paths
+                      );
+                      setAlbumSelectMode(false);
+                      setCheckedAlbumIds([]);
+                    }}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-cyan-400/60 bg-cyan-500/20 px-3 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/30 cursor-pointer transition-colors"
+                  >
+                    <FolderInput className="h-3.5 w-3.5" />
+                    Import to Library ({totalSelectedTracks})
+                  </button>
+                )}
+
                 <button
                   id="floating-merge-albums-btn"
                   type="button"
@@ -1005,7 +1074,7 @@ export function TrackList({
                     setAlbumSelectMode(false);
                     setCheckedAlbumIds([]);
                   }}
-                  className="m4-btn-primary h-8 px-3 text-xs"
+                  className={isStagingMode ? "m4-btn-secondary h-8 px-3 text-xs" : "m4-btn-primary h-8 px-3 text-xs"}
                   title={
                     selectedAlbums.length < 2
                       ? "Select at least 2 albums to merge"
@@ -1292,6 +1361,95 @@ export function TrackList({
           </div>
         </div>
 
+        {/* Live Library Destination Preview Card (Staging Mode — Issue #8) */}
+        {isStagingMode && onImportFromStaging && (() => {
+          const preview = stagingAlbumPreview;
+          const readyItems = preview?.items.filter((i) => i.status === "import") ?? [];
+          const sampleTarget = readyItems[0]?.target_path ?? preview?.items[0]?.target_path ?? null;
+          const destFolder = sampleTarget
+            ? sampleTarget.includes("/")
+              ? sampleTarget.slice(0, sampleTarget.lastIndexOf("/") + 1)
+              : ""
+            : null;
+          const hasDropIn = (preview?.drop_in_count ?? 0) > 0;
+          const dropInTitle =
+            readyItems.find((i) => i.drop_in)?.existing_album_title ?? null;
+
+          return (
+            <div
+              id="staging-destination-preview-card"
+              className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-500/40 bg-cyan-950/30 px-4 py-3"
+            >
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-md border border-cyan-500/45 bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                    <Inbox className="h-3 w-3" />
+                    Library Destination Preview
+                  </span>
+                  {hasDropIn && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/15 px-2 py-0.5 text-[10px] font-medium text-cyan-200">
+                      <Sparkles className="h-2.5 w-2.5" />
+                      Drop-in to existing album
+                      {dropInTitle ? ` “${dropInTitle}”` : ""}
+                    </span>
+                  )}
+                  {preview && preview.conflict_count > 0 && (
+                    <span className="rounded-full border border-danger/45 bg-danger/15 px-2 py-0.5 font-mono text-[10px] text-danger">
+                      {preview.conflict_count} conflict
+                      {preview.conflict_count === 1 ? "" : "s"}
+                    </span>
+                  )}
+                  {preview && preview.skipped_count > 0 && (
+                    <span className="rounded-full border border-border-subtle bg-canvas px-2 py-0.5 font-mono text-[10px] text-ink-muted">
+                      {preview.skipped_count} missing tags
+                    </span>
+                  )}
+                </div>
+
+                {stagingPreviewLoading ? (
+                  <p className="flex items-center gap-1.5 text-xs text-ink-secondary">
+                    <Loader2 className="h-3 w-3 animate-spin text-cyan-400" />
+                    Computing library destination path...
+                  </p>
+                ) : preview && destFolder !== null ? (
+                  <p className="flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-ink-secondary">
+                    <span className="text-ink-muted">Will move to</span>
+                    <ArrowRight className="h-3 w-3 shrink-0 text-cyan-400" />
+                    <span className="truncate font-medium text-cyan-200">
+                      {preview.target_library_name}/{destFolder}
+                    </span>
+                    {preview.sidecar_moves_count > 0 && (
+                      <span className="text-ink-muted">
+                        (+{preview.sidecar_moves_count} sidecar
+                        {preview.sidecar_moves_count === 1 ? "" : "s"})
+                      </span>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-xs text-ink-secondary">
+                    Tag Artist &amp; Album (or click Identify) to preview exact library destination.
+                  </p>
+                )}
+              </div>
+
+              <button
+                id="staging-import-album-btn"
+                type="button"
+                onClick={() =>
+                  onImportFromStaging(
+                    `${selectedAlbum.artist} — ${selectedAlbum.title}`,
+                    selectedAlbum.tracks.map((t) => t.path)
+                  )
+                }
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-cyan-400/60 bg-cyan-500/20 px-3 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/30 cursor-pointer transition-colors"
+              >
+                <FolderInput className="h-3.5 w-3.5" />
+                Import to Library ({selectedAlbum.track_count})
+              </button>
+            </div>
+          );
+        })()}
+
         {/* Red Diagnostic Banner: Major Metadata Missing */}
         {missingWarnings.length > 0 && (
           <div
@@ -1393,6 +1551,8 @@ export function TrackList({
           }
 
           if (selectedAlbum.missing_track_count > 0) {
+            const firstActiveMissing =
+              selectedAlbum.missing_tracks.find((m) => !m.ignored) ?? null;
             return (
               <div
                 id="completeness-missing-banner"
@@ -1450,6 +1610,21 @@ export function TrackList({
                       title="Verify against a different MusicBrainz edition/release"
                     >
                       Change Release
+                    </button>
+                  )}
+
+                  {slskdConfigured && onSearchSlskd && !isStagingMode && (
+                    <button
+                      id="album-search-slskd-btn"
+                      type="button"
+                      onClick={() =>
+                        onSearchSlskd(selectedAlbum, firstActiveMissing)
+                      }
+                      className="m4-btn-secondary h-7 px-2.5 text-[11px] border-accent/45 text-accent hover:bg-accent-soft"
+                      title="Search Soulseek via slskd for missing tracks on this album"
+                    >
+                      <CloudDownload className="h-3 w-3" />
+                      Find in slskd
                     </button>
                   )}
 
@@ -1681,6 +1856,25 @@ export function TrackList({
                 {chosenTracks.length === 1 ? "track" : "tracks"} selected
               </span>
               <div className="flex items-center gap-2">
+                {isStagingMode && onImportFromStaging && (
+                  <button
+                    id="bulk-staging-import-tracks-btn"
+                    type="button"
+                    onClick={() => {
+                      onImportFromStaging(
+                        `${chosenTracks.length} selected ${
+                          chosenTracks.length === 1 ? "track" : "tracks"
+                        }`,
+                        chosenTracks.map((t) => t.path)
+                      );
+                      setCheckedTrackPaths([]);
+                    }}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-cyan-400/60 bg-cyan-500/20 px-2.5 text-[11px] font-semibold text-cyan-100 hover:bg-cyan-500/30 cursor-pointer transition-colors"
+                  >
+                    <FolderInput className="h-3.5 w-3.5" />
+                    Import to Library
+                  </button>
+                )}
                 <button
                   id="bulk-move-tracks-to-album-btn"
                   type="button"
@@ -1688,7 +1882,7 @@ export function TrackList({
                     onMoveTracksToAlbum(chosenTracks, selectedAlbum.id);
                     setCheckedTrackPaths([]);
                   }}
-                  className="m4-btn-primary h-7 px-2.5 text-[11px]"
+                  className={isStagingMode ? "m4-btn-secondary h-7 px-2.5 text-[11px]" : "m4-btn-primary h-7 px-2.5 text-[11px]"}
                 >
                   <FolderInput className="h-3.5 w-3.5" />
                   Move to Album…
@@ -1883,6 +2077,17 @@ export function TrackList({
                       </td>
                       <td className="py-2.5 pl-1 pr-2 text-right">
                         <div className="inline-flex items-center justify-end gap-0.5">
+                          {slskdConfigured && onSearchSlskd && !isStagingMode && (
+                            <button
+                              type="button"
+                              onClick={() => onSearchSlskd(selectedAlbum, item)}
+                              className="rounded-md p-1 text-accent transition-colors hover:bg-accent-soft cursor-pointer"
+                              title="Search Soulseek via slskd for this missing track"
+                              aria-label="Search slskd for missing track"
+                            >
+                              <CloudDownload className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() =>

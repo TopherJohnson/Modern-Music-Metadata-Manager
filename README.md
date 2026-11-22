@@ -29,7 +29,7 @@ See [ROADMAP.md](ROADMAP.md) for planned future features (deeper Navidrome admin
 
 Prebuilt multi-arch images (`linux/amd64` and `linux/arm64`) are published automatically to GitHub Container Registry (`ghcr.io/topherjohnson/modern-music-metadata-manager`).
 
-1. Copy [docker-compose.yml](docker-compose.yml) and replace `/path/to/music` with the path to your music library (matching the `PUID` / `PGID` used by your Navidrome container).
+1. Copy [docker-compose.yml](docker-compose.yml) and replace `/path/to/music` with the path to your music library (matching the `PUID` / `PGID` used by your Navidrome container). Config data mounts to `./m4-metadata-manager/config:/config` so it stays isolated in multi-service stacks.
 2. Pull and start M⁴:
 
 ```bash

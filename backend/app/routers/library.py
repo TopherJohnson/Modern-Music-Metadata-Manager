@@ -17,10 +17,11 @@ from app.models import (
     TrackMetadata,
     UndoResponse,
 )
-from app.routers._deps import resolve_library
+from app.routers._deps import get_effective_settings, resolve_library
 from app.services.navidrome import trigger_navidrome_scan
 from app.services.organizer import undo_track_move
 from app.services.scanner import build_library_response, scan_library
+from app.services.staging import undo_staging_import
 from app.services.tags import (
     EDITABLE_FIELDS,
     TrackNotFoundError,
@@ -36,8 +37,22 @@ def _undo_single_entry(
     entry: AuditEntry,
     *,
     undo_batch_id: str | None = None,
+    staging_dir=None,
 ) -> tuple[TrackMetadata, int]:
-    """Revert one audit entry (move or tag edit) on disk and update SQLite cache + history."""
+    """Revert one audit entry (move, staging import, or tag edit) on disk and update SQLite cache + history."""
+    if entry.action == "import_from_staging":
+        if staging_dir is None:
+            raise ValueError(
+                "Staging directory is not configured (M4_STAGING_DIR), so this import cannot be moved back to Staging."
+            )
+        return undo_staging_import(
+            lib,
+            staging_dir,
+            db,
+            entry,
+            batch_id=undo_batch_id,
+        )
+
     if entry.action == "move_track":
         return undo_track_move(
             lib.path,
@@ -84,7 +99,7 @@ async def get_library(
     return build_library_response(
         tracks,
         query=q,
-        organize_settings=db.get_organize_settings(library_id=lib.id),
+        organize_settings=None if lib.is_staging else db.get_organize_settings(library_id=lib.id),
         mb_release_cache=db.get_all_mb_release_cache(),
         album_mb_links=db.get_album_mb_links(library_id=lib.id),
         missing_ignores=db.get_missing_track_ignores(library_id=lib.id),
@@ -100,7 +115,7 @@ async def post_library_scan(request: Request) -> LibraryResponse:
     tracks = scan_library(lib.path, db, force_rescan=True, library_id=lib.id)
     return build_library_response(
         tracks,
-        organize_settings=db.get_organize_settings(library_id=lib.id),
+        organize_settings=None if lib.is_staging else db.get_organize_settings(library_id=lib.id),
         mb_release_cache=db.get_all_mb_release_cache(),
         album_mb_links=db.get_album_mb_links(library_id=lib.id),
         missing_ignores=db.get_missing_track_ignores(library_id=lib.id),
@@ -125,7 +140,7 @@ async def undo_history_batch(
     trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
 ) -> BatchUndoResponse:
     """Revert every remaining undoable entry in a grouped history batch in reverse order."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -148,7 +163,11 @@ async def undo_history_batch(
     for entry in undoable:
         try:
             _, sidecar_count = _undo_single_entry(
-                lib, db, entry, undo_batch_id=undo_batch_id
+                lib,
+                db,
+                entry,
+                undo_batch_id=undo_batch_id,
+                staging_dir=settings.staging_dir,
             )
             undone_count += 1
             restored_sidecars += sidecar_count
@@ -156,7 +175,8 @@ async def undo_history_batch(
             errors.append(BulkUpdateError(path=entry.path, error=str(exc)))
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag and undone_count > 0
+        settings,
+        requested=trigger_navidrome_scan_flag and undone_count > 0 and not lib.is_staging,
     )
     return BatchUndoResponse(
         batch_id=batch_id,
@@ -174,7 +194,7 @@ async def undo_history_entry(
     trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
 ) -> UndoResponse:
     """Revert a single previous tag edit or file move recorded in `/config/m4.db`."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -190,11 +210,13 @@ async def undo_history_entry(
         )
 
     try:
-        restored_track, restored_sidecars = _undo_single_entry(lib, db, entry)
+        restored_track, restored_sidecars = _undo_single_entry(
+            lib, db, entry, staging_dir=settings.staging_dir
+        )
     except TrackNotFoundError as exc:
         detail = (
             "File is no longer at its moved location (it may have been moved or deleted since)."
-            if entry.action == "move_track"
+            if entry.action in {"move_track", "import_from_staging"}
             else "Track file was not found at its recorded path (undo any move first, or rescan)."
         )
         raise HTTPException(status_code=404, detail=detail) from exc
@@ -206,7 +228,7 @@ async def undo_history_entry(
         raise HTTPException(status_code=422, detail=f"Could not undo change: {exc}") from exc
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag
+        settings, requested=trigger_navidrome_scan_flag and not lib.is_staging
     )
     return UndoResponse(
         entry_id=entry.id,
@@ -221,5 +243,5 @@ async def undo_history_entry(
 @router.post("/navidrome/scan", response_model=NavidromeSyncResult)
 async def post_navidrome_scan(request: Request) -> NavidromeSyncResult:
     """Manually trigger a Navidrome Subsonic `startScan` call."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     return await trigger_navidrome_scan(settings, requested=True)

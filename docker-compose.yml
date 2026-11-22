@@ -15,8 +15,11 @@ services:
       # Multi-library example: mount multiple directories and set M4_LIBRARIES below
       # - /path/to/main-music:/music/main
       # - /path/to/soundtracks:/music/soundtracks
+      # Optional Staging / Inbox directory for cleaning external downloads before importing
+      # - /path/to/downloads:/downloads
       # Persistent lightweight SQLite cache, settings, and edit audit history
-      - ./config:/config
+      # Uses a service-scoped host folder so it won't collide with other services in a shared stack
+      - ./m4-metadata-manager/config:/config
     environment:
       # Match the UID/GID used by Navidrome so edited audio files retain expected ownership
       - PUID=1000
@@ -24,10 +27,17 @@ services:
       - TZ=America/Chicago
       # Optional: manage multiple libraries in separate directories
       # - M4_LIBRARIES=Main:/music/main,Soundtracks:/music/soundtracks
+      # Optional: Staging / Inbox folder (independent of slskd; edits here do not notify Navidrome)
+      # - M4_STAGING_DIR=/downloads
+      # Optional: slskd (Soulseek) integration — can also be configured in-app via Settings
+      # (env vars act as defaults if not overridden in Settings)
+      # - SLSKD_URL=http://gluetun:5030
+      # - SLSKD_API_KEY=your-slskd-api-key
       # Optional: enable built-in Basic Auth / login screen (disabled by default)
       # - M4_AUTH_USER=admin
       # - M4_AUTH_PASS=change-me
-      # Optional: trigger a Navidrome Subsonic `startScan` automatically after saving tags
+      # Optional: Navidrome Subsonic auto-scan — can also be configured in-app via Settings
+      # (env vars act as defaults if not overridden in Settings)
       # - NAVIDROME_URL=http://navidrome:4533
       # - NAVIDROME_USER=admin
       # - NAVIDROME_PASS=your-password

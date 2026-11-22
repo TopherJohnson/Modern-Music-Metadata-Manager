@@ -21,7 +21,7 @@ from app.models import (
     TrackUpdateRequest,
     TrackUpdateResponse,
 )
-from app.routers._deps import resolve_library
+from app.routers._deps import get_effective_settings, resolve_library
 from app.services.navidrome import trigger_navidrome_scan
 from app.services.organizer import (
     _TRACK_SIDECAR_EXTS,
@@ -103,7 +103,7 @@ async def put_track(
     payload: TrackUpdateRequest,
 ) -> TrackUpdateResponse:
     """Write updated metadata tags directly to an audio file on disk."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -131,7 +131,8 @@ async def put_track(
         _raise_http_for_tag_error(exc)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=payload.trigger_navidrome_scan and bool(updates)
+        settings,
+        requested=payload.trigger_navidrome_scan and bool(updates) and not lib.is_staging,
     )
     return TrackUpdateResponse(track=after, navidrome_sync=navidrome_sync)
 
@@ -145,7 +146,7 @@ async def delete_track(
     trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
 ) -> TrackDeleteResponse:
     """Permanently delete a single audio track file (and optional matching sidecars) from disk."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
     root = lib.path.resolve()
@@ -210,7 +211,7 @@ async def delete_track(
     )
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag
+        settings, requested=trigger_navidrome_scan_flag and not lib.is_staging
     )
     return TrackDeleteResponse(
         deleted_path=rel_path,
@@ -226,7 +227,7 @@ async def put_tracks_bulk(
     payload: BulkUpdateRequest,
 ) -> BulkUpdateResponse:
     """Apply shared tag edits across multiple tracks (e.g. album-level bulk update)."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -265,7 +266,7 @@ async def put_tracks_bulk(
 
     navidrome_sync = await trigger_navidrome_scan(
         settings,
-        requested=payload.trigger_navidrome_scan and bool(updated) and bool(updates),
+        requested=payload.trigger_navidrome_scan and bool(updated) and bool(updates) and not lib.is_staging,
     )
     return BulkUpdateResponse(
         updated=updated,
@@ -298,7 +299,7 @@ async def merge_albums(
     overrides, optional cover art unification, and optional folder consolidation under
     a single undoable audit batch.
     """
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -414,7 +415,7 @@ async def merge_albums(
 
     navidrome_sync = await trigger_navidrome_scan(
         settings,
-        requested=payload.trigger_navidrome_scan and (bool(updated) or bool(moved)),
+        requested=payload.trigger_navidrome_scan and (bool(updated) or bool(moved)) and not lib.is_staging,
     )
     return AlbumMergeResponse(
         updated=updated,
@@ -457,7 +458,7 @@ async def copy_track_artwork(
     payload: CopyArtworkRequest,
 ) -> BulkUpdateResponse:
     """Copy an existing track's embedded cover artwork onto one or more target tracks."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -506,7 +507,7 @@ async def copy_track_artwork(
         db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=payload.trigger_navidrome_scan and bool(updated)
+        settings, requested=payload.trigger_navidrome_scan and bool(updated) and not lib.is_staging
     )
     return BulkUpdateResponse(
         updated=updated,
@@ -524,7 +525,7 @@ async def put_track_artwork(
     trigger_navidrome_scan_flag: bool = Form(default=True, alias="trigger_navidrome_scan"),
 ) -> BulkUpdateResponse:
     """Embed or replace cover art on a single track or a batch of tracks."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -588,7 +589,7 @@ async def put_track_artwork(
         db.upsert_tracks(updated, library_id=lib.id)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag and bool(updated)
+        settings, requested=trigger_navidrome_scan_flag and bool(updated) and not lib.is_staging
     )
     return BulkUpdateResponse(
         updated=updated,
@@ -604,7 +605,7 @@ async def remove_track_artwork(
     trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
 ) -> TrackUpdateResponse:
     """Remove embedded cover artwork from an audio file."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
     lib = resolve_library(request)
 
@@ -622,6 +623,6 @@ async def remove_track_artwork(
         _raise_http_for_tag_error(exc)
 
     navidrome_sync = await trigger_navidrome_scan(
-        settings, requested=trigger_navidrome_scan_flag
+        settings, requested=trigger_navidrome_scan_flag and not lib.is_staging
     )
     return TrackUpdateResponse(track=after, navidrome_sync=navidrome_sync)

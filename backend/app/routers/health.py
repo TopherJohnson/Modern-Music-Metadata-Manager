@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 
 from app import __version__
 from app.models import HealthResponse, LibraryInfo
+from app.routers._deps import get_effective_settings
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -35,7 +36,7 @@ def _check_dir_permissions(path: Path) -> tuple[bool, bool, bool]:
 @router.get("/health", response_model=HealthResponse)
 async def get_health(request: Request) -> HealthResponse:
     """Return container status and music/config mount readability & writability."""
-    settings = request.app.state.settings
+    settings = get_effective_settings(request)
     db = request.app.state.db
 
     default_lib = settings.default_library
@@ -43,6 +44,16 @@ async def get_health(request: Request) -> HealthResponse:
         default_lib.path
     )
     _, _, config_writable = _check_dir_permissions(settings.config_dir)
+
+    staging_exists = False
+    staging_readable = False
+    staging_writable = False
+    staging_tracks = 0
+    if settings.staging_dir is not None:
+        staging_exists, staging_readable, staging_writable = _check_dir_permissions(
+            settings.staging_dir
+        )
+        staging_tracks = db.count_cached_tracks(library_id="__staging__")
 
     healthy = music_exists and music_readable and music_writable and config_writable
     status = "ok" if healthy else "degraded"
@@ -60,6 +71,13 @@ async def get_health(request: Request) -> HealthResponse:
         cached_tracks=db.count_cached_tracks(),
         auth_enabled=settings.auth_enabled,
         libraries_count=len(settings.libraries),
+        staging_configured=settings.staging_configured,
+        staging_dir=str(settings.staging_dir) if settings.staging_dir else None,
+        staging_dir_exists=staging_exists,
+        staging_dir_readable=staging_readable,
+        staging_dir_writable=staging_writable,
+        staging_tracks=staging_tracks,
+        slskd_configured=settings.slskd_configured,
     )
 
 

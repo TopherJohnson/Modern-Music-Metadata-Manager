@@ -29,6 +29,13 @@ class HealthResponse(BaseModel):
     cached_tracks: int
     auth_enabled: bool = False
     libraries_count: int = 1
+    staging_configured: bool = False
+    staging_dir: str | None = None
+    staging_dir_exists: bool = False
+    staging_dir_readable: bool = False
+    staging_dir_writable: bool = False
+    staging_tracks: int = 0
+    slskd_configured: bool = False
 
 
 class LibraryInfo(BaseModel):
@@ -632,6 +639,239 @@ class OrganizeApplyResponse(BaseModel):
     errors: list[BulkUpdateError] = Field(default_factory=list)
     removed_empty_dirs: int = 0
     navidrome_sync: NavidromeSyncResult
+
+
+class StagingStatusResponse(BaseModel):
+    """Availability and pending counts for the optional Staging / Inbox mount."""
+
+    configured: bool = False
+    path: str | None = None
+    exists: bool = False
+    readable: bool = False
+    writable: bool = False
+    track_count: int = 0
+    album_count: int = 0
+
+
+class StagingImportPlanItem(BaseModel):
+    """Single staged file entry in an import-to-library dry-run preview."""
+
+    source_path: str
+    target_path: str
+    album: str
+    artist: str
+    # "import" | "skipped" | "conflict"
+    status: str
+    drop_in: bool = False
+    existing_album_title: str | None = None
+    reason: str | None = None
+
+
+class StagingImportPreviewRequest(BaseModel):
+    """Request dry-run destination preview for importing staged tracks into a target library."""
+
+    target_library_id: str | None = None
+    paths: list[str] | None = None
+
+
+class StagingImportPreviewResponse(BaseModel):
+    """Dry-run destination path preview for moving staged audio & sidecars into a library."""
+
+    target_library_id: str
+    target_library_name: str
+    target_library_path: str
+    template: str
+    rename_files: bool
+    total_tracks: int
+    import_count: int
+    drop_in_count: int = 0
+    skipped_count: int
+    conflict_count: int
+    sidecar_moves_count: int = 0
+    items: list[StagingImportPlanItem] = Field(default_factory=list)
+    sidecars: list[OrganizeMoveResult] = Field(default_factory=list)
+
+
+class StagingImportApplyRequest(BaseModel):
+    """Execute cross-mount safe move of staged tracks into a target music library."""
+
+    target_library_id: str | None = None
+    paths: list[str] | None = None
+    trigger_navidrome_scan: bool = True
+
+
+class StagingImportApplyResponse(BaseModel):
+    """Outcome of importing staged files into a target library."""
+
+    target_library_id: str
+    batch_id: str | None = None
+    imported: list[OrganizeMoveResult] = Field(default_factory=list)
+    moved_sidecars: list[OrganizeMoveResult] = Field(default_factory=list)
+    skipped: int = 0
+    errors: list[BulkUpdateError] = Field(default_factory=list)
+    removed_empty_dirs: int = 0
+    navidrome_sync: NavidromeSyncResult
+
+
+class SlskdStatusResponse(BaseModel):
+    """Connection status for the optional slskd (Soulseek) integration."""
+
+    configured: bool = False
+    connected: bool = False
+    detail: str | None = None
+
+
+class SlskdSearchRequest(BaseModel):
+    """Request a ranked Soulseek track search via slskd."""
+
+    query: str = Field(..., min_length=1)
+    track_title: str | None = None
+    artist: str | None = None
+    preferred_formats: list[str] = Field(default_factory=list)
+    expected_length_ms: int | None = None
+    timeout_sec: float = Field(default=5.0, ge=1.0, le=15.0)
+
+
+class SlskdCandidate(BaseModel):
+    """Ranked audio file candidate returned by a Soulseek peer via slskd."""
+
+    username: str
+    filename: str
+    basename: str
+    directory: str = ""
+    extension: str
+    format: str
+    size: int = 0
+    bit_rate: int | None = None
+    sample_rate: int | None = None
+    bit_depth: int | None = None
+    length_sec: int | None = None
+    duration_diff_sec: float | None = None
+    has_free_upload_slot: bool = False
+    upload_speed: int = 0
+    queue_length: int = 0
+    score: int = 0
+    reasons: list[str] = Field(default_factory=list)
+
+
+class SlskdSearchResponse(BaseModel):
+    """Ranked slskd search candidates for a query."""
+
+    search_id: str
+    query: str
+    state: str = "Completed"
+    is_complete: bool = True
+    response_count: int = 0
+    file_count: int = 0
+    candidates: list[SlskdCandidate] = Field(default_factory=list)
+
+
+class SlskdDownloadFile(BaseModel):
+    """Single peer file entry to queue for download in slskd."""
+
+    filename: str
+    size: int = 0
+
+
+class SlskdQueueDownloadRequest(BaseModel):
+    """Queue one or more files from a peer in slskd."""
+
+    username: str = Field(..., min_length=1)
+    files: list[SlskdDownloadFile] = Field(..., min_length=1)
+
+
+class SlskdQueueDownloadResponse(BaseModel):
+    """Outcome of queueing downloads in slskd."""
+
+    ok: bool = True
+    username: str
+    queued_count: int = 0
+    detail: str | None = None
+
+
+class SlskdTransferItem(BaseModel):
+    """Single download transfer tracked by slskd."""
+
+    id: str
+    username: str
+    filename: str
+    basename: str
+    size: int = 0
+    bytes_transferred: int = 0
+    percent_complete: float = 0.0
+    state: str = "Unknown"
+    average_speed: float = 0.0
+    bytes_remaining: int = 0
+    requested_at: str | None = None
+    ended_at: str | None = None
+    exception: str | None = None
+
+
+class SlskdDownloadsResponse(BaseModel):
+    """Live transfer summary and queue from slskd."""
+
+    active_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    transfers: list[SlskdTransferItem] = Field(default_factory=list)
+
+
+class IntegrationSettingsStored(BaseModel):
+    """Persisted in-app integration settings stored in /config/m4.db."""
+
+    slskd_enabled: bool | None = None
+    slskd_url: str | None = None
+    slskd_api_key: str | None = None
+    navidrome_enabled: bool | None = None
+    navidrome_url: str | None = None
+    navidrome_user: str | None = None
+    navidrome_pass: str | None = None
+    navidrome_auto_scan: bool | None = None
+
+
+class IntegrationSettingsResponse(BaseModel):
+    """Safe API view of effective integration settings (secrets are never echoed back)."""
+
+    slskd_enabled: bool = False
+    slskd_url: str | None = None
+    slskd_api_key_set: bool = False
+    slskd_from_env: bool = False
+    navidrome_enabled: bool = False
+    navidrome_url: str | None = None
+    navidrome_user: str | None = None
+    navidrome_pass_set: bool = False
+    navidrome_auto_scan: bool = True
+    navidrome_from_env: bool = False
+
+
+class IntegrationSettingsUpdateRequest(BaseModel):
+    """Update in-app integration settings (omit or pass null on secret fields to keep existing secrets)."""
+
+    slskd_enabled: bool | None = None
+    slskd_url: str | None = None
+    slskd_api_key: str | None = None
+    clear_slskd_api_key: bool = False
+    navidrome_enabled: bool | None = None
+    navidrome_url: str | None = None
+    navidrome_user: str | None = None
+    navidrome_pass: str | None = None
+    clear_navidrome_pass: bool = False
+    navidrome_auto_scan: bool | None = None
+
+
+class TestSlskdRequest(BaseModel):
+    """Test a slskd connection using unsaved form values (or saved credentials if omitted)."""
+
+    url: str | None = None
+    api_key: str | None = None
+
+
+class TestNavidromeRequest(BaseModel):
+    """Test a Navidrome connection using unsaved form values (or saved credentials if omitted)."""
+
+    url: str | None = None
+    user: str | None = None
+    password: str | None = None
 
 
 AlbumMergeResponse.model_rebuild()
