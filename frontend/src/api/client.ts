@@ -494,6 +494,19 @@ export function refreshSlskdSearch(searchId: string): Promise<SlskdSearchRespons
   );
 }
 
+export function deleteSlskdSearch(
+  searchId: string,
+  options: { keepalive?: boolean } = {}
+): Promise<{ ok: boolean; deleted?: boolean }> {
+  return requestJson<{ ok: boolean; deleted?: boolean }>(
+    `/api/slskd/search/${encodeURIComponent(searchId)}`,
+    {
+      method: "DELETE",
+      keepalive: options.keepalive ?? true,
+    }
+  );
+}
+
 export function queueSlskdDownload(
   username: string,
   files: Array<{ filename: string; size: number }>

@@ -18,6 +18,7 @@ from app.services.slskd import (
     SlskdError,
     check_slskd_status,
     clear_completed_slskd_downloads,
+    delete_slskd_search,
     list_slskd_downloads,
     queue_slskd_downloads,
     refresh_slskd_search,
@@ -66,6 +67,21 @@ async def get_slskd_search_results(
     _require_slskd(settings)
     try:
         return await refresh_slskd_search(settings, search_id)
+    except SlskdError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.delete("/search/{search_id}")
+async def delete_slskd_search_endpoint(
+    request: Request,
+    search_id: str,
+) -> dict[str, bool]:
+    """Stop and remove an M⁴-created search from slskd (Issue #14)."""
+    settings = get_effective_settings(request)
+    _require_slskd(settings)
+    try:
+        deleted = await delete_slskd_search(settings, search_id)
+        return {"ok": True, "deleted": deleted}
     except SlskdError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

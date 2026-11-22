@@ -545,8 +545,10 @@ async def fetch_cover_art(mbid: str, *, size: int | None = 1200) -> tuple[bytes,
 _LEADING_INT_RE = re.compile(r"^\s*(\d+)")
 _FILENAME_DISC_TRACK_RE = re.compile(r"^\s*(\d{1,2})\s*[-._]\s*(\d{1,3})(?:\s*[-._)\s]\s*|\s+)(.*)$")
 _FILENAME_TRACK_RE = re.compile(r"^\s*(\d{1,3})(?:\s*[-._)\s]\s*|\s+)(.*)$")
-_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
-_PAREN_NOISE_RE = re.compile(r"\s*[\(\[](?:feat\.?|ft\.?|remaster(?:ed)?|live|bonus|explicit|clean|deluxe|radio edit|version)[^\)\]]*[\)\]]", re.IGNORECASE)
+_PAREN_NOISE_RE = re.compile(
+    r"\s*[\(\[（【](?:feat\.?|ft\.?|remaster(?:ed)?|live|bonus|explicit|clean|deluxe|radio edit|version)[^\)\]）】]*[\)\]）】]",
+    re.IGNORECASE,
+)
 
 
 def _parse_leading_int(value: str | None) -> int | None:
@@ -580,12 +582,74 @@ def _parse_filename_hint(filename: str) -> tuple[int | None, int | None, str]:
     return None, None, stem
 
 
+def _strip_latin_accents_preserve_unicode(text: str) -> str:
+    """Fold full-width/half-width forms (NFKC), casefold, and strip Latin/Greek/Cyrillic diacritics while preserving CJK/kana/Hangul."""
+    nfkc = unicodedata.normalize("NFKC", text).casefold()
+    out: list[str] = []
+    for ch in nfkc:
+        cp = ord(ch)
+        # Preserve kana dakuten/handakuten (e.g. ガ, パ) and Hangul syllables intact
+        if (0x3040 <= cp <= 0x30FF) or (0xAC00 <= cp <= 0xD7AF):
+            out.append(ch)
+            continue
+        decomp = unicodedata.normalize("NFD", ch)
+        if len(decomp) > 1:
+            base = "".join(c for c in decomp if not unicodedata.combining(c))
+            out.append(base if base else ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _fold_katakana_to_hiragana(text: str) -> str:
+    """Fold Japanese Katakana (U+30A1..U+30F6) to Hiragana (U+3041..U+3096) for script-agnostic kana comparison."""
+    out: list[str] = []
+    for ch in text:
+        cp = ord(ch)
+        if 0x30A1 <= cp <= 0x30F6:
+            out.append(chr(cp - 0x60))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _has_cjk_or_kana_or_hangul(text: str) -> bool:
+    for ch in text:
+        cp = ord(ch)
+        if (
+            (0x3040 <= cp <= 0x30FF)  # Hiragana & Katakana
+            or (0x3400 <= cp <= 0x4DBF)  # CJK Extension A
+            or (0x4E00 <= cp <= 0x9FFF)  # CJK Unified Ideographs
+            or (0xF900 <= cp <= 0xFAFF)  # CJK Compatibility Ideographs
+            or (0xAC00 <= cp <= 0xD7AF)  # Hangul Syllables
+        ):
+            return True
+    return False
+
+
 def _normalize_title(text: str | None) -> str:
+    """Unicode-aware title normalizer preserving non-Latin scripts (Japanese, Chinese, Korean, Cyrillic, Greek, Arabic, Hebrew, Thai...)."""
     if not text:
         return ""
-    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    cleaned = _PAREN_NOISE_RE.sub(" ", folded.lower())
-    return _NON_ALNUM_RE.sub(" ", cleaned).strip()
+    raw_clean = _PAREN_NOISE_RE.sub(" ", text)
+    folded = _strip_latin_accents_preserve_unicode(raw_clean)
+    tokens: list[str] = []
+    current: list[str] = []
+    for ch in folded:
+        if ch.isalnum():
+            current.append(ch)
+        else:
+            if current:
+                tokens.append("".join(current))
+                current = []
+    if current:
+        tokens.append("".join(current))
+    normalized = " ".join(tokens).strip()
+    if normalized:
+        return normalized
+    # Fallback for symbol-only titles (e.g., "♥", "∞", "???") so non-empty raw strings never collapse to ""
+    raw_fallback = unicodedata.normalize("NFKC", raw_clean).casefold().strip()
+    return " ".join(raw_fallback.split())
 
 
 def _title_similarity(local_text: str | None, mb_text: str | None) -> float:
@@ -595,12 +659,25 @@ def _title_similarity(local_text: str | None, mb_text: str | None) -> float:
         return 0.0
     if a == b:
         return 1.0
-    ratio = difflib.SequenceMatcher(None, a, b).ratio()
-    # Boost when one normalized title cleanly contains the other (e.g., extra subtitle)
-    if len(a) >= 4 and len(b) >= 4 and (a in b or b in a):
-        shorter = min(len(a), len(b))
-        longer = max(len(a), len(b))
-        if shorter / longer >= 0.55:
+
+    a_kana = _fold_katakana_to_hiragana(a)
+    b_kana = _fold_katakana_to_hiragana(b)
+    if a_kana == b_kana:
+        return 0.98
+
+    ratio = max(
+        difflib.SequenceMatcher(None, a, b).ratio(),
+        difflib.SequenceMatcher(None, a_kana, b_kana).ratio() * 0.98,
+    )
+    # Boost when one normalized title cleanly contains the other (e.g., extra subtitle);
+    # scale minimum length & ratio threshold by script (>=2 chars for CJK/kana/Hangul, >=4 chars for alphabetic)
+    is_cjk = _has_cjk_or_kana_or_hangul(a) or _has_cjk_or_kana_or_hangul(b)
+    min_len = 2 if is_cjk else 4
+    min_share = 0.14 if is_cjk else 0.55
+    if len(a_kana) >= min_len and len(b_kana) >= min_len and (a_kana in b_kana or b_kana in a_kana):
+        shorter = min(len(a_kana), len(b_kana))
+        longer = max(len(a_kana), len(b_kana))
+        if shorter / longer >= min_share:
             ratio = max(ratio, 0.86)
     return ratio
 
@@ -642,7 +719,7 @@ def _build_match_record(
 
 
 _GENERIC_TITLE_RE = re.compile(
-    r"^(?:track|audio\s*track|song|untitled|unknown|cd\s*track)\s*\d*$",
+    r"^(?:track|audio\s*track|song|untitled|unknown|cd\s*track|トラック|曲)\s*\d*$",
     re.IGNORECASE,
 )
 
@@ -654,7 +731,7 @@ def match_tracks_to_release(
     """Match local audio files to MusicBrainz release tracks without blind positional shifting.
 
     Priority pipeline (strict one-to-one assignment):
-      1. Normalized track title similarity (boosted/tie-broken by duration closeness and matching disc/track #).
+      1. Normalized track title similarity across the full release tracklist (boosted/tie-broken by duration closeness and matching disc/track #).
       2. Disc & Track number match for remaining unmatched tracks (verified against duration).
       3. Unambiguous duration match for untitled, unnumbered tracks.
       4. Unmatched tracks are flagged and left untouched rather than shifted off-by-one.
@@ -699,7 +776,7 @@ def match_tracks_to_release(
     used_mb_indices: set[int] = set()
 
     # ------------------------------------------------------------------
-    # Stage 1: Track title similarity (boosted/tie-broken by duration & disc/track #)
+    # Stage 1: Track title similarity across the WHOLE MB release tracklist
     # ------------------------------------------------------------------
     title_pairs: list[tuple[float, int, int, str, str, str]] = []
     for local_idx, local in enumerate(local_tracks):
@@ -750,7 +827,7 @@ def match_tracks_to_release(
                             local_idx,
                             mb_idx,
                             "title",
-                            "medium",
+                            "high" if sim >= 0.98 and pos_matches else "medium",
                             f"Matched by title ({int(round(sim * 100))}%), duration differs by {round(dur_diff)}s",
                         )
                     )
