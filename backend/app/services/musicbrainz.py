@@ -641,6 +641,12 @@ def _build_match_record(
     )
 
 
+_GENERIC_TITLE_RE = re.compile(
+    r"^(?:track|audio\s*track|song|untitled|unknown|cd\s*track)\s*\d*$",
+    re.IGNORECASE,
+)
+
+
 def match_tracks_to_release(
     local_tracks: list[TrackMetadata],
     mb_tracks: list[MusicBrainzTrackInfo],
@@ -648,9 +654,9 @@ def match_tracks_to_release(
     """Match local audio files to MusicBrainz release tracks without blind positional shifting.
 
     Priority pipeline (strict one-to-one assignment):
-      1. Disc & Track number match (verified against duration & title when available).
-      2. Normalized title similarity (boosted/verified by duration closeness).
-      3. Unambiguous duration match for untitled tracks without track numbers.
+      1. Normalized track title similarity (boosted/tie-broken by duration closeness and matching disc/track #).
+      2. Disc & Track number match for remaining unmatched tracks (verified against duration).
+      3. Unambiguous duration match for untitled, unnumbered tracks.
       4. Unmatched tracks are flagged and left untouched rather than shifted off-by-one.
     """
     if not local_tracks:
@@ -693,97 +699,27 @@ def match_tracks_to_release(
     used_mb_indices: set[int] = set()
 
     # ------------------------------------------------------------------
-    # Stage 1: Disc & Track number matching (with conflict & mismatch guard)
-    # ------------------------------------------------------------------
-    stage1_candidates: dict[int, list[tuple[float, int, str, str | None]]] = {}
-    for local_idx, local in enumerate(local_tracks):
-        eff_disc, eff_track, eff_title, from_tag = local_hints[local_idx]
-        if eff_track is None:
-            continue
-
-        mb_idx: int | None = None
-        if eff_disc is not None:
-            mb_idx = by_disc_track.get((eff_disc, eff_track))
-        elif is_single_disc:
-            single_disc_num = next(iter(disc_numbers_present))
-            mb_idx = by_disc_track.get((single_disc_num, eff_track))
-        else:
-            matches_for_num = by_track_only.get(eff_track, [])
-            if len(matches_for_num) == 1:
-                mb_idx = matches_for_num[0]
-
-        if mb_idx is None:
-            continue
-
-        mb = mb_tracks[mb_idx]
-        sim = _title_similarity(eff_title, mb.title)
-        dur_diff = _duration_diff_sec(local.duration, mb.length_ms)
-
-        # Guard against obviously shifted/wrong local track numbers:
-        # If BOTH title and duration strongly disagree with the numbered MB track,
-        # check if another MB track is an unmistakable title+duration match and defer.
-        if sim < 0.35 and dur_diff is not None and dur_diff > 15.0:
-            has_better_elsewhere = any(
-                other_idx != mb_idx
-                and _title_similarity(eff_title, other.title) >= 0.80
-                and (
-                    (_duration_diff_sec(local.duration, other.length_ms) or 0.0) <= 10.0
-                )
-                for other_idx, other in enumerate(mb_tracks)
-            )
-            if has_better_elsewhere:
-                continue
-
-        # Score candidate fit in case duplicate local files share the same track number
-        fit_score = (sim * 2.0) + (0.25 if from_tag else 0.0)
-        if dur_diff is not None:
-            fit_score += max(0.0, 1.5 - (dur_diff / 20.0))
-
-        # Determine confidence & human-readable explanation
-        disc_label = f"disc {mb.disc_number}, track {mb.track_number}" if not is_single_disc else f"track #{mb.track_number}"
-        if dur_diff is not None and dur_diff > 20.0 and sim < 0.55:
-            confidence = "low"
-            reason = f"Matched by {disc_label}, but duration differs by {round(dur_diff)}s — verify before applying"
-        elif dur_diff is not None and dur_diff <= 10.0:
-            confidence = "high"
-            reason = f"Matched by {disc_label} (duration within {round(dur_diff)}s)"
-        elif sim >= 0.65:
-            confidence = "high"
-            reason = f"Matched by {disc_label} & title"
-        else:
-            confidence = "high" if from_tag else "medium"
-            reason = f"Matched by {'tag' if from_tag else 'filename'} {disc_label}"
-
-        stage1_candidates.setdefault(mb_idx, []).append(
-            (fit_score, local_idx, confidence, reason)
-        )
-
-    for mb_idx, cands in stage1_candidates.items():
-        cands.sort(key=lambda item: (-item[0], item[1]))
-        _, best_local_idx, confidence, reason = cands[0]
-        assigned_mb[best_local_idx] = (mb_idx, "disc_track", confidence, reason)
-        used_mb_indices.add(mb_idx)
-
-    # ------------------------------------------------------------------
-    # Stage 2: Title similarity (verified/boosted by duration)
+    # Stage 1: Track title similarity (boosted/tie-broken by duration & disc/track #)
     # ------------------------------------------------------------------
     title_pairs: list[tuple[float, int, int, str, str, str]] = []
     for local_idx, local in enumerate(local_tracks):
-        if local_idx in assigned_mb:
-            continue
-        _, _, eff_title, _ = local_hints[local_idx]
-        if not _normalize_title(eff_title):
+        eff_disc, eff_track, eff_title, _ = local_hints[local_idx]
+        norm_title = _normalize_title(eff_title)
+        if not norm_title or _GENERIC_TITLE_RE.match(norm_title):
             continue
 
         for mb_idx, mb in enumerate(mb_tracks):
-            if mb_idx in used_mb_indices:
-                continue
             sim = _title_similarity(eff_title, mb.title)
             dur_diff = _duration_diff_sec(local.duration, mb.length_ms)
+            pos_matches = eff_track == mb.track_number and (
+                eff_disc == mb.disc_number
+                or (eff_disc is None and is_single_disc)
+            )
+            pos_bonus = 0.15 if pos_matches else 0.0
 
             if sim >= 0.78:
                 if dur_diff is not None and dur_diff <= 15.0:
-                    score = sim + 0.35 - (dur_diff / 100.0)
+                    score = sim + 0.35 + pos_bonus - (dur_diff / 100.0)
                     title_pairs.append(
                         (
                             score,
@@ -795,19 +731,31 @@ def match_tracks_to_release(
                         )
                     )
                 elif dur_diff is None or dur_diff <= 45.0:
-                    score = sim
+                    score = sim + pos_bonus
                     title_pairs.append(
                         (
                             score,
                             local_idx,
                             mb_idx,
                             "title",
-                            "high" if sim >= 0.90 else "medium",
+                            "high" if sim >= 0.90 or pos_matches else "medium",
                             f"Matched by title similarity ({int(round(sim * 100))}%)",
                         )
                     )
+                elif sim >= 0.85:
+                    score = sim - 0.10 + pos_bonus
+                    title_pairs.append(
+                        (
+                            score,
+                            local_idx,
+                            mb_idx,
+                            "title",
+                            "medium",
+                            f"Matched by title ({int(round(sim * 100))}%), duration differs by {round(dur_diff)}s",
+                        )
+                    )
             elif sim >= 0.55 and dur_diff is not None and dur_diff <= 10.0:
-                score = sim + 0.25 - (dur_diff / 100.0)
+                score = sim + 0.25 + pos_bonus - (dur_diff / 100.0)
                 title_pairs.append(
                     (
                         score,
@@ -827,6 +775,75 @@ def match_tracks_to_release(
         used_mb_indices.add(mb_idx)
 
     # ------------------------------------------------------------------
+    # Stage 2: Disc & Track number matching (for remaining unmatched tracks)
+    # ------------------------------------------------------------------
+    stage2_candidates: dict[int, list[tuple[float, int, str, str | None]]] = {}
+    for local_idx, local in enumerate(local_tracks):
+        if local_idx in assigned_mb:
+            continue
+        eff_disc, eff_track, eff_title, from_tag = local_hints[local_idx]
+        if eff_track is None:
+            continue
+
+        mb_idx: int | None = None
+        if eff_disc is not None:
+            mb_idx = by_disc_track.get((eff_disc, eff_track))
+        elif is_single_disc:
+            single_disc_num = next(iter(disc_numbers_present))
+            mb_idx = by_disc_track.get((single_disc_num, eff_track))
+        else:
+            matches_for_num = [
+                idx
+                for idx in by_track_only.get(eff_track, [])
+                if idx not in used_mb_indices
+            ]
+            if len(matches_for_num) == 1:
+                mb_idx = matches_for_num[0]
+
+        if mb_idx is None or mb_idx in used_mb_indices:
+            continue
+
+        mb = mb_tracks[mb_idx]
+        sim = _title_similarity(eff_title, mb.title)
+        dur_diff = _duration_diff_sec(local.duration, mb.length_ms)
+
+        fit_score = (sim * 2.0) + (0.25 if from_tag else 0.0)
+        if dur_diff is not None:
+            fit_score += max(0.0, 1.5 - (dur_diff / 20.0))
+
+        disc_label = (
+            f"disc {mb.disc_number}, track {mb.track_number}"
+            if not is_single_disc
+            else f"track #{mb.track_number}"
+        )
+        if dur_diff is not None and dur_diff > 20.0 and sim < 0.55:
+            confidence = "low"
+            reason = f"Matched by {disc_label}, but duration differs by {round(dur_diff)}s — verify before applying"
+        elif dur_diff is not None and dur_diff <= 10.0:
+            confidence = "high"
+            reason = f"Matched by {disc_label} (duration within {round(dur_diff)}s)"
+        elif sim >= 0.65:
+            confidence = "high"
+            reason = f"Matched by {disc_label} & title"
+        else:
+            confidence = "high" if from_tag else "medium"
+            reason = f"Matched by {'tag' if from_tag else 'filename'} {disc_label}"
+
+        stage2_candidates.setdefault(mb_idx, []).append(
+            (fit_score, local_idx, confidence, reason)
+        )
+
+    for mb_idx, cands in stage2_candidates.items():
+        if mb_idx in used_mb_indices:
+            continue
+        cands.sort(key=lambda item: (-item[0], item[1]))
+        _, best_local_idx, confidence, reason = cands[0]
+        if best_local_idx in assigned_mb:
+            continue
+        assigned_mb[best_local_idx] = (mb_idx, "disc_track", confidence, reason)
+        used_mb_indices.add(mb_idx)
+
+    # ------------------------------------------------------------------
     # Stage 3: Pure duration match for untitled/unnumbered tracks
     # ------------------------------------------------------------------
     duration_pairs: list[tuple[float, int, int, str]] = []
@@ -843,7 +860,6 @@ def match_tracks_to_release(
         if not close:
             continue
         close.sort(key=lambda item: item[0])
-        # Only accept if clearly unambiguous (no second candidate within 3s of the best)
         if len(close) == 1 or (close[1][0] - close[0][0]) >= 3.0:
             best_diff, best_mb_idx = close[0]
             duration_pairs.append(

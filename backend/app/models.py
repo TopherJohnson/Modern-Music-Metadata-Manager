@@ -248,6 +248,7 @@ class NavidromeSplitWarning(BaseModel):
     severity: str = "split"  # "split" (breaks PID.Album) or "artwork" (inconsistent covers)
     message: str
     values: list[str] = Field(default_factory=list)
+    related_album_ids: list[str] = Field(default_factory=list)
 
 
 class AlbumGroup(BaseModel):

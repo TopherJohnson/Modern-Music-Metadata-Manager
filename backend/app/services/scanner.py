@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import logging
 import os
 import re
 import time
+import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
@@ -398,7 +400,7 @@ def build_library_response(
 
             album_groups.append(
                 AlbumGroup(
-                    id=_stable_id(artist_name.casefold(), album_name.casefold()),
+                    id=_stable_id(artist_name, album_name),
                     title=album_name,
                     artist=artist_name,
                     year=years[0] if years else None,
@@ -425,13 +427,15 @@ def build_library_response(
         total_albums += len(album_groups)
         artists.append(
             ArtistGroup(
-                id=_stable_id(artist_name.casefold()),
+                id=_stable_id(artist_name),
                 name=artist_name,
                 album_count=len(album_groups),
                 track_count=sum(a.track_count for a in album_groups),
                 albums=album_groups,
             )
         )
+
+    _detect_cross_album_conflicts(artists)
 
     stats = LibraryStats(
         artist_count=len(artists),
@@ -444,3 +448,170 @@ def build_library_response(
         artists=artists,
         scanned_at=time.time(),
     )
+
+
+_NORM_PUNCT_RE = re.compile(r"[^a-z0-9]+")
+_SERIES_TOKEN_RE = re.compile(
+    r"\b(?:\d+|ii|iii|iv|v|vi|vii|viii|ix|x)\b",
+    re.IGNORECASE,
+)
+_GENERIC_DUMP_DIRS: frozenset[str] = frozenset(
+    {"", ".", "downloads", "download", "music", "misc", "singles", "unsorted", "inbox", "incoming"}
+)
+
+
+def _normalize_album_key(value: str) -> str:
+    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    replaced = folded.lower().replace("&", " and ")
+    return _NORM_PUNCT_RE.sub(" ", replaced).strip()
+
+
+def _extract_series_tokens(norm_title: str) -> tuple[str, ...]:
+    """Return numeric / Roman-numeral tokens so Vol. 1 vs Vol. 2 are never flagged as typos."""
+    return tuple(_SERIES_TOKEN_RE.findall(norm_title))
+
+
+def _detect_cross_album_conflicts(artists: list[ArtistGroup]) -> None:
+    """Detect probable split/near-duplicate albums across AlbumGroup entries (Issue #2).
+
+    Signals checked:
+      1. Normalized album title match (same normalized artist; ignores punctuation/casing).
+      2. High-threshold fuzzy title similarity (>= 0.88, same artist, guarded against Vol. 1/2 etc.).
+      3. Shared non-root, non-generic parent folder on disk.
+      4. Shared MusicBrainz Album ID across separate AlbumGroup entries.
+    """
+    all_albums: list[AlbumGroup] = [
+        album for artist in artists for album in artist.albums
+    ]
+    if len(all_albums) < 2:
+        return
+
+    albums_by_id: dict[str, AlbumGroup] = {a.id: a for a in all_albums}
+    # Map album.id -> {sibling_album_id: set[reason_str]}
+    conflicts: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+
+    def record_pair(a: AlbumGroup, b: AlbumGroup, reason: str) -> None:
+        if a.id == b.id:
+            return
+        conflicts[a.id][b.id].add(reason)
+        conflicts[b.id][a.id].add(reason)
+
+    # Pre-compute normalized keys
+    norm_artist: dict[str, str] = {}
+    norm_title: dict[str, str] = {}
+    for album in all_albums:
+        norm_artist[album.id] = _normalize_album_key(album.artist)
+        norm_title[album.id] = _normalize_album_key(album.title)
+
+    # Signal 1 & 2: Normalized title match & high-threshold fuzzy similarity (same normalized artist)
+    by_artist_norm: dict[str, list[AlbumGroup]] = defaultdict(list)
+    for album in all_albums:
+        if album.title == "Unknown Album":
+            continue
+        by_artist_norm[norm_artist[album.id]].append(album)
+
+    for artist_albums in by_artist_norm.values():
+        if len(artist_albums) < 2:
+            continue
+        for i in range(len(artist_albums)):
+            a = artist_albums[i]
+            na = norm_title[a.id]
+            if not na:
+                continue
+            tokens_a = _extract_series_tokens(na)
+            for j in range(i + 1, len(artist_albums)):
+                b = artist_albums[j]
+                nb = norm_title[b.id]
+                if not nb:
+                    continue
+                if na == nb:
+                    record_pair(a, b, "same title ignoring punctuation/casing")
+                    continue
+
+                if len(na) >= 6 and len(nb) >= 6:
+                    # Guard against Vol. 1 vs Vol. 2, Disc 1 vs Disc 2, Part II vs Part III, 2021 vs 2022
+                    if tokens_a != _extract_series_tokens(nb):
+                        continue
+                    ratio = difflib.SequenceMatcher(None, na, nb).ratio()
+                    if ratio >= 0.88:
+                        record_pair(a, b, "near-duplicate album title")
+
+    # Signal 3: Shared non-root, non-generic parent folder on disk
+    by_dir: dict[str, list[AlbumGroup]] = defaultdict(list)
+    for album in all_albums:
+        album_dirs = {
+            Path(t.path).parent.as_posix()
+            for t in album.tracks
+        }
+        for rel_dir in album_dirs:
+            leaf = Path(rel_dir).name.lower() if rel_dir not in {"", "."} else ""
+            if rel_dir in {"", "."} or leaf in _GENERIC_DUMP_DIRS:
+                continue
+            by_dir[rel_dir].append(album)
+
+    for dir_albums in by_dir.values():
+        # Guard against large flat folders holding unrelated albums (e.g. >4 distinct albums in one folder)
+        if 2 <= len(dir_albums) <= 4:
+            for i in range(len(dir_albums)):
+                for j in range(i + 1, len(dir_albums)):
+                    if (
+                        dir_albums[i].title == "Unknown Album"
+                        and dir_albums[j].title == "Unknown Album"
+                    ):
+                        continue
+                    record_pair(dir_albums[i], dir_albums[j], "files share the same folder")
+
+    # Signal 4: Shared MusicBrainz Album ID across separate AlbumGroup entries
+    by_mbid: dict[str, list[AlbumGroup]] = defaultdict(list)
+    for album in all_albums:
+        mbids = {
+            (t.musicbrainz_album_id or "").strip().lower()
+            for t in album.tracks
+            if (t.musicbrainz_album_id or "").strip()
+        }
+        for mbid in mbids:
+            by_mbid[mbid].append(album)
+
+    for mbid_albums in by_mbid.values():
+        if len(mbid_albums) >= 2:
+            for i in range(len(mbid_albums)):
+                for j in range(i + 1, len(mbid_albums)):
+                    record_pair(mbid_albums[i], mbid_albums[j], "same MusicBrainz Album ID")
+
+    # Attach consolidated NavidromeSplitWarning to each affected album
+    for album_id, sibling_map in conflicts.items():
+        album = albums_by_id[album_id]
+        related_ids = sorted(
+            sibling_map.keys(),
+            key=lambda sid: albums_by_id[sid].title.casefold(),
+        )
+        sibling_labels: list[str] = []
+        all_reasons: list[str] = []
+        for sid in related_ids:
+            sib = albums_by_id[sid]
+            label = (
+                sib.title
+                if sib.artist.casefold() == album.artist.casefold()
+                else f"{sib.artist} — {sib.title}"
+            )
+            sibling_labels.append(label)
+            for reason in sorted(sibling_map[sid]):
+                if reason not in all_reasons:
+                    all_reasons.append(reason)
+
+        quoted = ", ".join(f'"{lbl}"' for lbl in sibling_labels[:3])
+        if len(sibling_labels) > 3:
+            quoted += f" (+{len(sibling_labels) - 3} more)"
+        reason_str = "; ".join(all_reasons)
+
+        album.navidrome_warnings.append(
+            NavidromeSplitWarning(
+                field="duplicate_album",
+                label="Possible Split Album",
+                severity="split",
+                message=f"Probable split with {quoted} ({reason_str}). Merge them to unify tags in Navidrome.",
+                values=sibling_labels[:6],
+                related_album_ids=related_ids,
+            )
+        )
+

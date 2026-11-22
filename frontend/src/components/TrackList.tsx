@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertOctagon,
   AlertTriangle,
@@ -6,12 +6,17 @@ import {
   Check,
   CheckCircle2,
   CheckSquare,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Disc3,
+  Filter,
   FolderInput,
   FolderOpen,
   FolderTree,
   GitMerge,
   Globe,
+  ImagePlus,
   Images,
   Layers,
   Music,
@@ -20,6 +25,15 @@ import {
   X,
 } from "lucide-react";
 import { formatDuration, getArtworkUrl } from "../api/client";
+import {
+  MISSING_FIELD_OPTIONS,
+  albumMatchesMissingField,
+  countTracksMissingField,
+  getMissingFieldOption,
+  isTrackMissingField,
+  type MissingFieldKey,
+  type MissingScopeMode,
+} from "../utils/missingFields";
 import type { AlbumGroup, ArtistGroup, TrackMetadata } from "../types/music";
 
 export type AlbumFilterMode = "all" | "mismatches" | "missing" | "structure";
@@ -30,6 +44,8 @@ interface TrackListProps {
   selectedTrackPath: string | null;
   isBulkEditingAlbum: boolean;
   albumFilter: AlbumFilterMode;
+  missingField: MissingFieldKey | null;
+  missingScope: MissingScopeMode;
   organizeEnabled: boolean;
   artworkRevision: number;
   loading: boolean;
@@ -39,6 +55,7 @@ interface TrackListProps {
   onSelectTrack: (track: TrackMetadata) => void;
   onStartBulkEdit: (album: AlbumGroup) => void;
   onIdentifyAlbum: (album: AlbumGroup) => void;
+  onFindAlbumCover: (album: AlbumGroup) => void;
   onIdentifyTrack: (track: TrackMetadata) => void;
   onDeleteTrack: (track: TrackMetadata) => void;
   onMergeAlbums: (albums: AlbumGroup[]) => void;
@@ -49,6 +66,8 @@ interface TrackListProps {
   ) => void;
   onOrganizeAlbum: (album: AlbumGroup) => void;
   onChangeAlbumFilter: (filter: AlbumFilterMode) => void;
+  onChangeMissingField: (field: MissingFieldKey | null) => void;
+  onChangeMissingScope: (scope: MissingScopeMode) => void;
   onRescan: () => void;
 }
 
@@ -94,6 +113,8 @@ export function TrackList({
   selectedTrackPath,
   isBulkEditingAlbum,
   albumFilter,
+  missingField,
+  missingScope,
   organizeEnabled,
   artworkRevision,
   loading,
@@ -103,6 +124,7 @@ export function TrackList({
   onSelectTrack,
   onStartBulkEdit,
   onIdentifyAlbum,
+  onFindAlbumCover,
   onIdentifyTrack,
   onDeleteTrack,
   onMergeAlbums,
@@ -110,11 +132,15 @@ export function TrackList({
   onMoveTracksToAlbum,
   onOrganizeAlbum,
   onChangeAlbumFilter,
+  onChangeMissingField,
+  onChangeMissingScope,
   onRescan,
 }: TrackListProps) {
   const [albumSelectMode, setAlbumSelectMode] = useState(false);
   const [checkedAlbumIds, setCheckedAlbumIds] = useState<string[]>([]);
   const [checkedTrackPaths, setCheckedTrackPaths] = useState<string[]>([]);
+  const [missingMenuOpen, setMissingMenuOpen] = useState(false);
+  const missingMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setCheckedTrackPaths([]);
@@ -132,6 +158,27 @@ export function TrackList({
       return filtered.length === prev.length ? prev : filtered;
     });
   }, [artists]);
+
+  useEffect(() => {
+    if (!missingMenuOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (
+        missingMenuRef.current &&
+        !missingMenuRef.current.contains(event.target as Node)
+      ) {
+        setMissingMenuOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMissingMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [missingMenuOpen]);
   if (loading) {
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-3 bg-canvas p-8 text-ink-secondary">
@@ -175,6 +222,17 @@ export function TrackList({
     );
   }
 
+  const activeMissingOption = getMissingFieldOption(missingField);
+  const visibleAlbums = allAlbums.filter(({ album }) => {
+    if (albumFilter === "missing" && !album.has_missing_metadata) return false;
+    if (albumFilter === "mismatches" && !hasMismatchWarning(album)) return false;
+    if (albumFilter === "structure" && !album.needs_reorganize) return false;
+    if (missingField && !albumMatchesMissingField(album, missingField, missingScope)) {
+      return false;
+    }
+    return true;
+  });
+
   if (!selectedAlbum) {
     const missingCount = allAlbums.filter(
       ({ album }) => album.has_missing_metadata
@@ -186,18 +244,21 @@ export function TrackList({
       ({ album }) => album.needs_reorganize
     ).length;
 
-    const visibleAlbums =
-      albumFilter === "missing"
-        ? allAlbums.filter(({ album }) => album.has_missing_metadata)
-        : albumFilter === "mismatches"
-          ? allAlbums.filter(({ album }) => hasMismatchWarning(album))
-          : albumFilter === "structure"
-            ? allAlbums.filter(({ album }) => album.needs_reorganize)
-            : allAlbums;
-
     const toggleFilter = (target: Exclude<AlbumFilterMode, "all">) => {
       onChangeAlbumFilter(albumFilter === target ? "all" : target);
     };
+
+    const primaryMissingOpts = MISSING_FIELD_OPTIONS.filter(
+      (o) => o.group === "primary"
+    );
+    const advancedMissingOpts = MISSING_FIELD_OPTIONS.filter(
+      (o) => o.group === "advanced"
+    );
+    const activeMissingCount = missingField
+      ? allAlbums.filter(({ album }) =>
+          albumMatchesMissingField(album, missingField, missingScope)
+        ).length
+      : 0;
 
     return (
       <main className="flex-1 overflow-y-auto bg-canvas p-6">
@@ -259,7 +320,7 @@ export function TrackList({
                   ? "border-accent bg-accent-soft text-accent"
                   : "border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
               }`}
-              title="Show only albums with Navidrome split-album tag or cover art mismatches"
+              title="Show only albums with Navidrome split-album tag, near-duplicate, or cover art mismatches"
             >
               <AlertTriangle
                 className={`h-3.5 w-3.5 ${
@@ -283,6 +344,166 @@ export function TrackList({
                 {mismatchedCount}
               </span>
             </button>
+
+            {/* Missing Specific Field Popover (Issue #1) */}
+            <div ref={missingMenuRef} className="relative">
+              <div className="inline-flex items-center">
+                <button
+                  id="filter-missing-field-btn"
+                  type="button"
+                  onClick={() => setMissingMenuOpen((o) => !o)}
+                  aria-expanded={missingMenuOpen}
+                  aria-haspopup="menu"
+                  className={`inline-flex h-8 items-center gap-1.5 border px-2.5 text-xs font-medium transition-colors cursor-pointer ${
+                    activeMissingOption
+                      ? "rounded-l-lg border-accent bg-accent-soft text-accent"
+                      : "rounded-lg border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
+                  }`}
+                  title="Filter albums missing a specific metadata field (e.g., Cover Art, Genre, Year)"
+                >
+                  <Filter className="h-3.5 w-3.5" />
+                  <span>
+                    {activeMissingOption
+                      ? `Missing: ${activeMissingOption.label}`
+                      : "Missing Field…"}
+                  </span>
+                  {activeMissingOption ? (
+                    <span className="rounded-full bg-accent px-1.5 py-0.2 font-mono text-[10px] font-semibold text-[#14110c]">
+                      {activeMissingCount}
+                    </span>
+                  ) : (
+                    <ChevronDown className="h-3 w-3 opacity-70" />
+                  )}
+                </button>
+                {activeMissingOption && (
+                  <button
+                    id="clear-missing-field-btn"
+                    type="button"
+                    onClick={() => onChangeMissingField(null)}
+                    className="inline-flex h-8 items-center rounded-r-lg border border-l-0 border-accent bg-accent-soft px-1.5 text-accent hover:bg-accent hover:text-[#14110c] cursor-pointer"
+                    title="Clear missing field filter"
+                    aria-label="Clear missing field filter"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {missingMenuOpen && (
+                <div
+                  id="missing-field-popover"
+                  role="menu"
+                  className="absolute right-0 z-50 mt-1.5 w-64 rounded-xl border border-border-strong bg-surface p-2 shadow-2xl"
+                >
+                  {/* Scope Toggle: Any track vs Whole album */}
+                  <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-border-subtle bg-canvas p-1 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => onChangeMissingScope("any")}
+                      className={`flex-1 rounded-md py-1 font-medium transition-colors cursor-pointer ${
+                        missingScope === "any"
+                          ? "bg-surface-elevated text-ink-primary"
+                          : "text-ink-muted hover:text-ink-secondary"
+                      }`}
+                    >
+                      Any track missing
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onChangeMissingScope("all")}
+                      className={`flex-1 rounded-md py-1 font-medium transition-colors cursor-pointer ${
+                        missingScope === "all"
+                          ? "bg-surface-elevated text-ink-primary"
+                          : "text-ink-muted hover:text-ink-secondary"
+                      }`}
+                    >
+                      Whole album
+                    </button>
+                  </div>
+
+                  <div className="space-y-0.5">
+                    {primaryMissingOpts.map((opt) => {
+                      const count = allAlbums.filter(({ album }) =>
+                        albumMatchesMissingField(album, opt.key, missingScope)
+                      ).length;
+                      const isActive = missingField === opt.key;
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onChangeMissingField(isActive ? null : opt.key);
+                            setMissingMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-colors cursor-pointer ${
+                            isActive
+                              ? "bg-accent-soft font-medium text-accent"
+                              : "text-ink-secondary hover:bg-surface-elevated hover:text-ink-primary"
+                          }`}
+                        >
+                          <span>{opt.label}</span>
+                          <span
+                            className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${
+                              isActive
+                                ? "bg-accent text-[#14110c] font-semibold"
+                                : count > 0
+                                  ? "bg-surface-elevated text-ink-primary"
+                                  : "text-ink-muted"
+                            }`}
+                          >
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="my-1.5 border-t border-border-subtle pt-1.5">
+                    <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                      Advanced / Navidrome
+                    </p>
+                    <div className="space-y-0.5">
+                      {advancedMissingOpts.map((opt) => {
+                        const count = allAlbums.filter(({ album }) =>
+                          albumMatchesMissingField(album, opt.key, missingScope)
+                        ).length;
+                        const isActive = missingField === opt.key;
+                        return (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              onChangeMissingField(isActive ? null : opt.key);
+                              setMissingMenuOpen(false);
+                            }}
+                            className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-colors cursor-pointer ${
+                              isActive
+                                ? "bg-accent-soft font-medium text-accent"
+                                : "text-ink-secondary hover:bg-surface-elevated hover:text-ink-primary"
+                            }`}
+                          >
+                            <span>{opt.label}</span>
+                            <span
+                              className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${
+                                isActive
+                                  ? "bg-accent text-[#14110c] font-semibold"
+                                  : count > 0
+                                    ? "bg-surface-elevated text-ink-primary"
+                                    : "text-ink-muted"
+                              }`}
+                            >
+                              {count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Folder Structure Drift Filter (visible when Folder Organization monitoring is enabled) */}
             {organizeEnabled && (
@@ -355,26 +576,33 @@ export function TrackList({
           </div>
         </div>
 
-        {visibleAlbums.length === 0 && albumFilter !== "all" ? (
+        {visibleAlbums.length === 0 && (albumFilter !== "all" || missingField !== null) ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-border-subtle bg-surface/60 px-6 py-14 text-center">
             <CheckCircle2 className="h-8 w-8 text-ok" />
             <h3 className="mt-3 text-sm font-semibold text-ink-primary">
-              {albumFilter === "missing"
-                ? "No tracks missing major metadata"
-                : albumFilter === "structure"
-                  ? "Folder structure is fully organized"
-                  : "All albums look clean"}
+              {activeMissingOption
+                ? `No albums missing ${activeMissingOption.label}`
+                : albumFilter === "missing"
+                  ? "No tracks missing major metadata"
+                  : albumFilter === "structure"
+                    ? "Folder structure is fully organized"
+                    : "All albums look clean"}
             </h3>
             <p className="mt-1 max-w-xs text-xs text-ink-secondary">
-              {albumFilter === "missing"
-                ? "Every track in your library has Title, Artist, and Album tags populated."
-                : albumFilter === "structure"
-                  ? "All eligible albums match your configured library folder layout."
-                  : "No Navidrome split-album tag mismatches or inconsistent album covers detected."}
+              {activeMissingOption
+                ? `Every album matching your active filters has ${activeMissingOption.label} populated.`
+                : albumFilter === "missing"
+                  ? "Every track in your library has Title, Artist, and Album tags populated."
+                  : albumFilter === "structure"
+                    ? "All eligible albums match your configured library folder layout."
+                    : "No Navidrome split-album tag mismatches or inconsistent album covers detected."}
             </p>
             <button
               type="button"
-              onClick={() => onChangeAlbumFilter("all")}
+              onClick={() => {
+                onChangeAlbumFilter("all");
+                onChangeMissingField(null);
+              }}
               className="m4-btn-secondary mt-4"
             >
               Show All Albums ({allAlbums.length})
@@ -394,6 +622,9 @@ export function TrackList({
               const isChecked = checkedAlbumIds.includes(album.id);
               const showCheckbox =
                 albumSelectMode || checkedAlbumIds.length > 0;
+              const fieldMissingCount = missingField
+                ? countTracksMissingField(album, missingField)
+                : 0;
 
               const toggleAlbumChecked = () => {
                 setCheckedAlbumIds((prev) =>
@@ -467,6 +698,16 @@ export function TrackList({
 
                     {/* Top-right status badges */}
                     <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
+                      {activeMissingOption && fieldMissingCount > 0 && (
+                        <div
+                          className="flex items-center gap-1 rounded-md border border-accent/60 bg-canvas/92 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent shadow-sm backdrop-blur-xs"
+                          title={`${fieldMissingCount} of ${album.track_count} tracks missing ${activeMissingOption.label}`}
+                        >
+                          {fieldMissingCount === album.track_count
+                            ? activeMissingOption.shortBadge
+                            : `${fieldMissingCount}/${album.track_count} ${activeMissingOption.shortBadge}`}
+                        </div>
+                      )}
                       {album.has_missing_metadata && (
                         <div
                           className="flex items-center gap-1 rounded-md border border-danger/60 bg-danger/90 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm"
@@ -614,19 +855,107 @@ export function TrackList({
     (w) => w.severity === "artwork"
   );
 
+  // Prev / Next navigation within the currently filtered album list (Issue #1)
+  const navList = visibleAlbums.some((e) => e.album.id === selectedAlbum.id)
+    ? visibleAlbums
+    : allAlbums;
+  const currentAlbumIdx = navList.findIndex(
+    (e) => e.album.id === selectedAlbum.id
+  );
+  const prevAlbumEntry = currentAlbumIdx > 0 ? navList[currentAlbumIdx - 1] : null;
+  const nextAlbumEntry =
+    currentAlbumIdx >= 0 && currentAlbumIdx < navList.length - 1
+      ? navList[currentAlbumIdx + 1]
+      : null;
+
+  // Issue #1 fast-fix: show quick "Find Cover" action when cover art is missing or filtered
+  const albumMissingAnyArt =
+    selectedAlbum.cover_track_path === null ||
+    selectedAlbum.tracks.some((t) => !t.has_artwork) ||
+    missingField === "artwork" ||
+    missingField === "low_res_artwork";
+
+  // Issue #2 fast-fix: resolve sibling split albums for one-click Merge
+  const relatedSplitIds = Array.from(
+    new Set(
+      splitWarnings.flatMap((w) =>
+        w.field === "duplicate_album" && w.related_album_ids
+          ? w.related_album_ids
+          : []
+      )
+    )
+  );
+  const relatedSiblingAlbums = relatedSplitIds
+    .map((id) => allAlbums.find((e) => e.album.id === id)?.album)
+    .filter((a): a is AlbumGroup => a !== undefined && a.id !== selectedAlbum.id);
+
   return (
     <main className="flex flex-1 flex-col overflow-hidden bg-canvas">
       {/* Album Header */}
       <section className="shrink-0 border-b border-border-subtle bg-surface/60 px-6 py-5">
-        <button
-          id="back-to-albums-btn"
-          type="button"
-          onClick={onBackToAll}
-          className="mb-3 inline-flex items-center gap-1.5 text-xs text-ink-muted hover:text-ink-primary transition-colors cursor-pointer"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          All Albums
-        </button>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <button
+            id="back-to-albums-btn"
+            type="button"
+            onClick={onBackToAll}
+            className="inline-flex items-center gap-1.5 text-xs text-ink-muted hover:text-ink-primary transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            All Albums
+          </button>
+
+          {navList.length > 1 && currentAlbumIdx >= 0 && (
+            <div
+              id="album-prev-next-nav"
+              className="inline-flex items-center gap-1 text-xs"
+            >
+              {activeMissingOption && (
+                <span className="mr-1.5 rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[10px] text-accent">
+                  Missing: {activeMissingOption.label}
+                </span>
+              )}
+              <button
+                id="prev-filtered-album-btn"
+                type="button"
+                disabled={!prevAlbumEntry}
+                onClick={() =>
+                  prevAlbumEntry &&
+                  onSelectAlbum(prevAlbumEntry.artist, prevAlbumEntry.album)
+                }
+                className="m4-btn-secondary h-7 px-2 text-[11px] disabled:opacity-40"
+                title={
+                  prevAlbumEntry
+                    ? `Previous: ${prevAlbumEntry.album.title}`
+                    : "First album in list"
+                }
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                Prev
+              </button>
+              <span className="px-1.5 font-mono text-[10px] text-ink-muted">
+                {currentAlbumIdx + 1} / {navList.length}
+              </span>
+              <button
+                id="next-filtered-album-btn"
+                type="button"
+                disabled={!nextAlbumEntry}
+                onClick={() =>
+                  nextAlbumEntry &&
+                  onSelectAlbum(nextAlbumEntry.artist, nextAlbumEntry.album)
+                }
+                className="m4-btn-secondary h-7 px-2 text-[11px] disabled:opacity-40"
+                title={
+                  nextAlbumEntry
+                    ? `Next: ${nextAlbumEntry.album.title}`
+                    : "Last album in list"
+                }
+              >
+                Next
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
           <AlbumCover
@@ -669,7 +998,19 @@ export function TrackList({
             </p>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {albumMissingAnyArt && (
+              <button
+                id="header-find-cover-btn"
+                type="button"
+                onClick={() => onFindAlbumCover(selectedAlbum)}
+                className="m4-btn-secondary"
+                title="Search MusicBrainz Cover Art Archive for this album"
+              >
+                <ImagePlus className="h-3.5 w-3.5 text-accent" />
+                Find Cover
+              </button>
+            )}
             <button
               id="header-identify-album-btn"
               type="button"
@@ -748,7 +1089,7 @@ export function TrackList({
                 <div className="min-w-0 space-y-1.5">
                   <p className="text-xs font-semibold text-ink-primary">
                     {splitWarnings.length > 0
-                      ? `Navidrome Split-Album Risk (${splitWarnings.length} tag ${
+                      ? `Navidrome Split-Album Risk (${splitWarnings.length} ${
                           splitWarnings.length === 1 ? "mismatch" : "mismatches"
                         })`
                       : "Inconsistent Album Artwork"}
@@ -778,15 +1119,32 @@ export function TrackList({
                 </div>
               </div>
 
-              {!isBulkEditingAlbum && (
-                <button
-                  type="button"
-                  onClick={() => onStartBulkEdit(selectedAlbum)}
-                  className="m4-btn-secondary shrink-0 h-7 px-2.5 text-[11px]"
-                >
-                  Fix in Bulk Edit
-                </button>
-              )}
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                {relatedSiblingAlbums.length > 0 && (
+                  <button
+                    id="merge-sibling-albums-btn"
+                    type="button"
+                    onClick={() =>
+                      onMergeAlbums([selectedAlbum, ...relatedSiblingAlbums])
+                    }
+                    className="m4-btn-primary h-7 px-2.5 text-[11px]"
+                    title={`Merge with ${relatedSiblingAlbums.map((a) => a.title).join(", ")}`}
+                  >
+                    <GitMerge className="h-3 w-3" />
+                    Merge Split ({relatedSiblingAlbums.length + 1})
+                  </button>
+                )}
+
+                {!isBulkEditingAlbum && (
+                  <button
+                    type="button"
+                    onClick={() => onStartBulkEdit(selectedAlbum)}
+                    className="m4-btn-secondary h-7 px-2.5 text-[11px]"
+                  >
+                    Fix in Bulk Edit
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -958,13 +1316,25 @@ export function TrackList({
                           />
                         )}
                         <div className="min-w-0">
-                          <p
-                            className={`truncate font-medium ${
-                              isSelected ? "text-accent" : "text-ink-primary"
-                            }`}
-                          >
-                            {track.title || track.filename}
-                          </p>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <p
+                              className={`truncate font-medium ${
+                                isSelected ? "text-accent" : "text-ink-primary"
+                              }`}
+                            >
+                              {track.title || track.filename}
+                            </p>
+                            {activeMissingOption &&
+                              missingField &&
+                              isTrackMissingField(track, missingField) && (
+                                <span
+                                  className="shrink-0 rounded border border-accent/50 bg-accent-soft px-1.5 py-0.2 font-mono text-[9px] font-semibold text-accent"
+                                  title={`This track is missing ${activeMissingOption.label}`}
+                                >
+                                  {activeMissingOption.shortBadge}
+                                </span>
+                              )}
+                          </div>
                           {isMissingMajor && (
                             <p className="truncate font-mono text-[10px] text-danger">
                               Missing: {track.missing_fields.join(", ")}

@@ -68,6 +68,7 @@ export interface NavidromeSplitWarning {
   severity: "missing" | "split" | "artwork" | "structure" | string;
   message: string;
   values: string[];
+  related_album_ids?: string[];
 }
 
 export interface AlbumGroup {
