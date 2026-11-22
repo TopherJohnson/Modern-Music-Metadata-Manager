@@ -1,6 +1,7 @@
 import type { AlbumGroup, TrackMetadata } from "../types/music";
 
 export type MissingFieldKey =
+  | "missing_tracks"
   | "artwork"
   | "year"
   | "genre"
@@ -20,10 +21,16 @@ export interface MissingFieldOption {
   key: MissingFieldKey;
   label: string;
   shortBadge: string;
-  group: "primary" | "advanced";
+  group: "album" | "primary" | "advanced";
 }
 
 export const MISSING_FIELD_OPTIONS: MissingFieldOption[] = [
+  {
+    key: "missing_tracks",
+    label: "Track from Album",
+    shortBadge: "Missing Tracks",
+    group: "album",
+  },
   { key: "artwork", label: "Cover Art", shortBadge: "No Art", group: "primary" },
   { key: "year", label: "Year / Date", shortBadge: "No Year", group: "primary" },
   { key: "genre", label: "Genre", shortBadge: "No Genre", group: "primary" },
@@ -77,6 +84,8 @@ export function isTrackMissingField(
   field: MissingFieldKey
 ): boolean {
   switch (field) {
+    case "missing_tracks":
+      return false;
     case "artwork":
       return !track.has_artwork;
     case "low_res_artwork":
@@ -113,6 +122,9 @@ export function countTracksMissingField(
   album: AlbumGroup,
   field: MissingFieldKey
 ): number {
+  if (field === "missing_tracks") {
+    return album.missing_track_count;
+  }
   let count = 0;
   for (const track of album.tracks) {
     if (isTrackMissingField(track, field)) count += 1;
@@ -123,8 +135,16 @@ export function countTracksMissingField(
 export function albumMatchesMissingField(
   album: AlbumGroup,
   field: MissingFieldKey,
-  scope: MissingScopeMode
+  scope: MissingScopeMode,
+  showIgnoredMissing = false
 ): boolean {
+  if (field === "missing_tracks") {
+    if (album.missing_track_count > 0) return true;
+    if (showIgnoredMissing) {
+      return album.missing_tracks_ignored || album.missing_tracks.length > 0;
+    }
+    return false;
+  }
   if (album.track_count === 0) return false;
   const missingCount = countTracksMissingField(album, field);
   return scope === "all" ? missingCount === album.track_count : missingCount > 0;

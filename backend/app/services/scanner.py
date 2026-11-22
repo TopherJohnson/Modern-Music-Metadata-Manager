@@ -20,10 +20,12 @@ from app.models import (
     ArtworkVariant,
     LibraryResponse,
     LibraryStats,
+    MusicBrainzReleaseDetail,
     NavidromeSplitWarning,
     OrganizeSettings,
     TrackMetadata,
 )
+from app.services.completeness import populate_library_completeness
 from app.services.organizer import track_needs_reorganize
 from app.services.tags import read_track_metadata
 
@@ -324,6 +326,9 @@ def build_library_response(
     *,
     query: str | None = None,
     organize_settings: OrganizeSettings | None = None,
+    mb_release_cache: dict[str, MusicBrainzReleaseDetail] | None = None,
+    album_mb_links: dict[str, str] | None = None,
+    missing_ignores: dict[str, set[tuple[int, int]]] | None = None,
 ) -> LibraryResponse:
     """Group a flat track list into Artist -> Album -> Track hierarchy with optional filtering."""
     filtered = tracks
@@ -436,6 +441,12 @@ def build_library_response(
         )
 
     _detect_cross_album_conflicts(artists)
+    populate_library_completeness(
+        artists,
+        mb_release_cache=mb_release_cache,
+        album_mb_links=album_mb_links,
+        missing_ignores=missing_ignores,
+    )
 
     stats = LibraryStats(
         artist_count=len(artists),

@@ -1424,10 +1424,292 @@ def test_merge_multiple_albums_and_single_batch_undo(client: TestClient) -> None
     assert sw_reverted["album_count"] == 3
 
 
+def test_local_missing_tracks_detection_and_guardrails() -> None:
+    """Issue #5 Tier 1: offline gap/total/disc detection with single, unnumbered, continuous-disc, and hidden-track guardrails."""
+    from app.models import TrackMetadata
+    from app.services.scanner import build_library_response
+
+    tracks = [
+        # 1. Sequence gaps: tracks 2 and 4 -> missing #1 and #3
+        TrackMetadata(
+            path="A/Gaps/02.flac", filename="02.flac", format="FLAC",
+            artist="Artist A", album_artist="Artist A", album="Gap Album",
+            title="Two", track_number="2",
+        ),
+        TrackMetadata(
+            path="A/Gaps/04.flac", filename="04.flac", format="FLAC",
+            artist="Artist A", album_artist="Artist A", album="Gap Album",
+            title="Four", track_number="4",
+        ),
+        # 2. Short of declared total: 1/4, 2/4 -> missing #3, #4
+        TrackMetadata(
+            path="A/Short/01.flac", filename="01.flac", format="FLAC",
+            artist="Artist A", album_artist="Artist A", album="Short Total",
+            title="One", track_number="1/4",
+        ),
+        TrackMetadata(
+            path="A/Short/02.flac", filename="02.flac", format="FLAC",
+            artist="Artist A", album_artist="Artist A", album="Short Total",
+            title="Two", track_number="2/4",
+        ),
+        # 3. Missing Disc 2 of 2
+        TrackMetadata(
+            path="A/Discs/1-01.flac", filename="1-01.flac", format="FLAC",
+            artist="Artist A", album_artist="Artist A", album="Two Disc Set",
+            title="D1T1", disc_number="1/2", track_number="1/1",
+        ),
+        # 4. Guardrail: unnumbered album -> 0 missing
+        TrackMetadata(
+            path="B/Unnum/a.mp3", filename="a.mp3", format="MP3",
+            artist="Artist B", album_artist="Artist B", album="Unnumbered",
+            title="Alpha",
+        ),
+        TrackMetadata(
+            path="B/Unnum/b.mp3", filename="b.mp3", format="MP3",
+            artist="Artist B", album_artist="Artist B", album="Unnumbered",
+            title="Beta",
+        ),
+        # 5. Guardrail: standalone 1-track single without /total -> 0 missing
+        TrackMetadata(
+            path="B/Single/01.mp3", filename="01.mp3", format="MP3",
+            artist="Artist B", album_artist="Artist B", album="Standalone Single",
+            title="Hit Single", track_number="4",
+        ),
+        # 6. Explicit partial 1-track album tagged 2/4 -> missing #1, #3, #4
+        TrackMetadata(
+            path="B/Partial/02.mp3", filename="02.mp3", format="MP3",
+            artist="Artist B", album_artist="Artist B", album="Partial Single Tag",
+            title="Only Track", track_number="2/4",
+        ),
+        # 7. Guardrail: continuous multi-disc numbering (Disc 1: 1..2, Disc 2: 3..4) -> 0 missing
+        TrackMetadata(
+            path="C/Cont/1-01.flac", filename="1-01.flac", format="FLAC",
+            artist="Artist C", album_artist="Artist C", album="Continuous Multi",
+            title="T1", disc_number="1/2", track_number="1",
+        ),
+        TrackMetadata(
+            path="C/Cont/1-02.flac", filename="1-02.flac", format="FLAC",
+            artist="Artist C", album_artist="Artist C", album="Continuous Multi",
+            title="T2", disc_number="1/2", track_number="2",
+        ),
+        TrackMetadata(
+            path="C/Cont/2-03.flac", filename="2-03.flac", format="FLAC",
+            artist="Artist C", album_artist="Artist C", album="Continuous Multi",
+            title="T3", disc_number="2/2", track_number="3",
+        ),
+        TrackMetadata(
+            path="C/Cont/2-04.flac", filename="2-04.flac", format="FLAC",
+            artist="Artist C", album_artist="Artist C", album="Continuous Multi",
+            title="T4", disc_number="2/2", track_number="4",
+        ),
+        # 8. Guardrail: hidden bonus track #99 after #1, #2 -> 0 missing
+        TrackMetadata(
+            path="C/Bonus/01.flac", filename="01.flac", format="FLAC",
+            artist="Artist C", album_artist="Artist C", album="Hidden Track Album",
+            title="First", track_number="1",
+        ),
+        TrackMetadata(
+            path="C/Bonus/02.flac", filename="02.flac", format="FLAC",
+            artist="Artist C", album_artist="Artist C", album="Hidden Track Album",
+            title="Second", track_number="2",
+        ),
+        TrackMetadata(
+            path="C/Bonus/99.flac", filename="99.flac", format="FLAC",
+            artist="Artist C", album_artist="Artist C", album="Hidden Track Album",
+            title="Secret Outro", track_number="99",
+        ),
+    ]
+
+    lib = build_library_response(tracks)
+    by_title = {alb.title: alb for art in lib.artists for alb in art.albums}
+
+    assert [(m.disc_number, m.track_number, m.source) for m in by_title["Gap Album"].missing_tracks] == [
+        (1, 1, "local_gap"),
+        (1, 3, "local_gap"),
+    ]
+    assert [(m.disc_number, m.track_number, m.source) for m in by_title["Short Total"].missing_tracks] == [
+        (1, 3, "local_total"),
+        (1, 4, "local_total"),
+    ]
+    assert [(m.disc_number, m.track_number, m.source) for m in by_title["Two Disc Set"].missing_tracks] == [
+        (2, 0, "local_disc"),
+    ]
+    assert by_title["Unnumbered"].missing_track_count == 0
+    assert by_title["Standalone Single"].missing_track_count == 0
+    assert [m.track_number for m in by_title["Partial Single Tag"].missing_tracks] == [1, 3, 4]
+    assert by_title["Continuous Multi"].missing_track_count == 0
+    assert by_title["Hidden Track Album"].missing_track_count == 0
 
 
+def test_completeness_musicbrainz_cache_stray_search_and_ignores(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #5 Tier 2 + Library Search + Single/Bulk Ignores stored in SQLite."""
+    from app.models import MusicBrainzReleaseDetail, MusicBrainzTrackInfo
+    from app.routers import completeness as comp_router
+    from app.services.tags import write_track_metadata
 
+    music_dir = client.app.state.settings.music_dir
 
+    # Create an incomplete Stevie Wonder album (tracks 1 & 2) + stray track #3 sitting in Unknown Album
+    p1 = "Stevie Wonder/Song Review/01 - Superstition.mp3"
+    p2 = "Stevie Wonder/Song Review/02 - Sir Duke.mp3"
+    p_stray = "Inbox/Isnt She Lovely.mp3"
+    p_partial = "Stevie Wonder/Talking Book/02 - Maybe Your Baby.mp3"
+    for p in (p1, p2, p_stray, p_partial):
+        _create_minimal_mp3(music_dir / p)
 
+    mbid = "55555555-5555-5555-5555-555555555555"
+    write_track_metadata(
+        music_dir, p1,
+        {
+            "title": "Superstition", "artist": "Stevie Wonder",
+            "album_artist": "Stevie Wonder", "album": "Song Review",
+            "track_number": "1/3", "musicbrainz_album_id": mbid,
+        },
+    )
+    write_track_metadata(
+        music_dir, p2,
+        {
+            "title": "Sir Duke", "artist": "Stevie Wonder",
+            "album_artist": "Stevie Wonder", "album": "Song Review",
+            "track_number": "2/3", "musicbrainz_album_id": mbid,
+        },
+    )
+    write_track_metadata(
+        music_dir, p_stray,
+        {
+            "title": "Isn't She Lovely", "artist": "Stevie Wonder",
+            "album_artist": None, "album": None,
+        },
+    )
+    write_track_metadata(
+        music_dir, p_partial,
+        {
+            "title": "Maybe Your Baby", "artist": "Stevie Wonder",
+            "album_artist": "Stevie Wonder", "album": "Talking Book",
+            "track_number": "2/4",
+        },
+    )
 
+    mb_calls = 0
 
+    async def fake_release(requested_mbid: str):
+        nonlocal mb_calls
+        mb_calls += 1
+        return MusicBrainzReleaseDetail(
+            mbid=requested_mbid,
+            title="Song Review",
+            artist="Stevie Wonder",
+            date="1996",
+            year="1996",
+            track_count=3,
+            disc_count=1,
+            cover_art_url=f"/api/musicbrainz/cover/{requested_mbid}?size=500",
+            tracks=[
+                MusicBrainzTrackInfo(
+                    disc_number=1, disc_total=1, track_number=1, track_total=3,
+                    title="Superstition", artist="Stevie Wonder", length_ms=266000,
+                ),
+                MusicBrainzTrackInfo(
+                    disc_number=1, disc_total=1, track_number=2, track_total=3,
+                    title="Sir Duke", artist="Stevie Wonder", length_ms=234000,
+                ),
+                MusicBrainzTrackInfo(
+                    disc_number=1, disc_total=1, track_number=3, track_total=3,
+                    title="Isn't She Lovely", artist="Stevie Wonder", length_ms=394000,
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(comp_router, "get_release_detail", fake_release)
+
+    lib_before = client.get("/api/library", params={"rescan": True}).json()
+    albums = {alb["title"]: alb for art in lib_before["artists"] for alb in art["albums"]}
+    song_review = albums["Song Review"]
+    talking_book = albums["Talking Book"]
+
+    # Tier 1 already spots track #3 missing on Song Review and #1,#3,#4 on Talking Book
+    assert song_review["missing_track_count"] == 1
+    assert song_review["completeness_source"] == "local"
+    assert talking_book["missing_track_count"] == 3
+
+    # Tier 2 check fetches MB tracklist, caches it in SQLite, and auto-matches the stray track in Unknown Album
+    check1 = client.post("/api/albums/completeness/check", json={"album_id": song_review["id"]})
+    assert check1.status_code == 200
+    body1 = check1.json()
+    assert mb_calls == 1
+    assert body1["cached"] is False
+    assert body1["missing_track_count"] == 1
+    assert body1["missing_tracks"][0]["title"] == "Isn't She Lovely"
+    assert body1["missing_tracks"][0]["source"] == "musicbrainz"
+    assert len(body1["missing_tracks"][0]["candidates"]) >= 1
+    top_cand = body1["missing_tracks"][0]["candidates"][0]
+    assert top_cand["path"] == p_stray
+    assert top_cand["album"] == "Unknown Album"
+    assert top_cand["album_track_count"] == 1
+
+    # Second check uses SQLite mb_release_cache without hitting MusicBrainz again
+    check2 = client.post("/api/albums/completeness/check", json={"album_id": song_review["id"]})
+    assert check2.status_code == 200
+    assert check2.json()["cached"] is True
+    assert mb_calls == 1
+
+    # Library endpoint automatically hydrates Tier 2 missing title + candidate from SQLite cache
+    lib_after_mb = client.get("/api/library").json()
+    sr_mb = next(
+        alb for art in lib_after_mb["artists"] for alb in art["albums"] if alb["id"] == song_review["id"]
+    )
+    assert sr_mb["completeness_source"] == "musicbrainz"
+    assert sr_mb["missing_tracks"][0]["title"] == "Isn't She Lovely"
+    assert sr_mb["missing_tracks"][0]["candidates"][0]["path"] == p_stray
+
+    # Dedicated local library search finds the stray track
+    search_res = client.get(
+        "/api/albums/completeness/search-library",
+        params={"album_id": song_review["id"], "q": "Isn't She Lovely", "artist": "Stevie Wonder"},
+    )
+    assert search_res.status_code == 200
+    assert search_res.json()["candidates"][0]["path"] == p_stray
+
+    # Single-track ignore suppresses track #3 while keeping ignored=True in payload
+    ign_one = client.post(
+        "/api/albums/completeness/ignore",
+        json={"album_id": song_review["id"], "disc_number": 1, "track_number": 3, "ignore": True},
+    )
+    assert ign_one.status_code == 200
+    lib_ign1 = client.get("/api/library").json()
+    sr_ign1 = next(
+        alb for art in lib_ign1["artists"] for alb in art["albums"] if alb["id"] == song_review["id"]
+    )
+    assert sr_ign1["missing_track_count"] == 0
+    assert sr_ign1["missing_tracks"][0]["ignored"] is True
+    assert sr_ign1["missing_tracks_ignored"] is False
+
+    # Bulk ignore marks both Song Review and Talking Book as intentional partial albums
+    bulk_ign = client.post(
+        "/api/albums/completeness/ignore/bulk",
+        json={"album_ids": [song_review["id"], talking_book["id"]], "ignore": True},
+    )
+    assert bulk_ign.status_code == 200
+    assert bulk_ign.json()["updated_count"] == 2
+
+    lib_bulk = client.get("/api/library").json()
+    albums_bulk = {alb["id"]: alb for art in lib_bulk["artists"] for alb in art["albums"]}
+    assert albums_bulk[song_review["id"]]["missing_tracks_ignored"] is True
+    assert albums_bulk[song_review["id"]]["missing_track_count"] == 0
+    assert albums_bulk[talking_book["id"]]["missing_tracks_ignored"] is True
+    assert albums_bulk[talking_book["id"]]["missing_track_count"] == 0
+
+    # Bulk re-enable restores active missing-track counts on both albums
+    bulk_restore = client.post(
+        "/api/albums/completeness/ignore/bulk",
+        json={"album_ids": [song_review["id"], talking_book["id"]], "ignore": False},
+    )
+    assert bulk_restore.status_code == 200
+    lib_restored = client.get("/api/library").json()
+    albums_restored = {alb["id"]: alb for art in lib_restored["artists"] for alb in art["albums"]}
+    assert albums_restored[song_review["id"]]["missing_tracks_ignored"] is False
+    assert albums_restored[song_review["id"]]["missing_track_count"] == 1
+    assert albums_restored[talking_book["id"]]["missing_tracks_ignored"] is False
+    assert albums_restored[talking_book["id"]]["missing_track_count"] == 3

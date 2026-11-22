@@ -1,4 +1,5 @@
 import type {
+  AlbumCompletenessResponse,
   AlbumMergePayload,
   AlbumMergeResponse,
   AuditEntry,
@@ -9,6 +10,7 @@ import type {
   HealthResponse,
   LibraryInfo,
   LibraryResponse,
+  LibrarySearchMissingResponse,
   MusicBrainzApplyPayload,
   MusicBrainzApplyResponse,
   MusicBrainzApplyTrackPayload,
@@ -335,6 +337,83 @@ export function undoHistoryBatch(batchId: string): Promise<BatchUndoResponse> {
   return requestJson<BatchUndoResponse>(`/api/history/batch/${encodeURIComponent(batchId)}/undo`, {
     method: "POST",
   });
+}
+
+export function checkAlbumCompleteness(
+  albumId: string,
+  options: { mbid?: string | null; forceRefresh?: boolean } = {}
+): Promise<AlbumCompletenessResponse> {
+  return requestJson<AlbumCompletenessResponse>("/api/albums/completeness/check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      album_id: albumId,
+      mbid: options.mbid ?? null,
+      force_refresh: options.forceRefresh ?? false,
+    }),
+  });
+}
+
+export function setMissingTrackIgnore(payload: {
+  albumId: string;
+  discNumber?: number;
+  trackNumber?: number;
+  ignore: boolean;
+  clearAll?: boolean;
+}): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>("/api/albums/completeness/ignore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      album_id: payload.albumId,
+      disc_number: payload.discNumber ?? 0,
+      track_number: payload.trackNumber ?? 0,
+      ignore: payload.ignore,
+      clear_all: payload.clearAll ?? false,
+    }),
+  });
+}
+
+export function bulkSetMissingTrackIgnore(
+  albumIds: string[],
+  ignore: boolean
+): Promise<{ ok: boolean; updated_count: number }> {
+  return requestJson<{ ok: boolean; updated_count: number }>(
+    "/api/albums/completeness/ignore/bulk",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        album_ids: albumIds,
+        ignore,
+      }),
+    }
+  );
+}
+
+export function searchLibraryForMissingTrack(params: {
+  albumId: string;
+  query?: string | null;
+  artist?: string | null;
+  lengthMs?: number | null;
+  limit?: number;
+}): Promise<LibrarySearchMissingResponse> {
+  const qs = new URLSearchParams({ album_id: params.albumId });
+  if (params.query && params.query.trim()) {
+    qs.set("q", params.query.trim());
+  }
+  if (params.artist && params.artist.trim()) {
+    qs.set("artist", params.artist.trim());
+  }
+  if (params.lengthMs && params.lengthMs > 0) {
+    qs.set("length_ms", String(Math.round(params.lengthMs)));
+  }
+  if (params.limit) {
+    qs.set("limit", String(params.limit));
+  }
+  return requestJson<LibrarySearchMissingResponse>(
+    `/api/albums/completeness/search-library?${qs.toString()}`
+  );
 }
 
 export function getArtworkUrl(path: string, version?: number): string {

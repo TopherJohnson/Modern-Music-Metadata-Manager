@@ -251,6 +251,79 @@ class NavidromeSplitWarning(BaseModel):
     related_album_ids: list[str] = Field(default_factory=list)
 
 
+class MissingTrackCandidate(BaseModel):
+    """A track found elsewhere in the local library that may correspond to a missing album track."""
+
+    path: str
+    filename: str
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    album_id: str
+    album_track_count: int = 1
+    duration: float = 0.0
+    score: int = 0
+    reason: str = ""
+
+
+class MissingTrackItem(BaseModel):
+    """A detected missing track (or missing disc) slot within an album."""
+
+    disc_number: int = 1
+    track_number: int = 0  # 0 indicates an entire missing disc
+    title: str | None = None
+    artist: str | None = None
+    length_ms: int | None = None
+    # "local_gap" | "local_total" | "local_disc" | "musicbrainz"
+    source: str = "local_gap"
+    ignored: bool = False
+    candidates: list[MissingTrackCandidate] = Field(default_factory=list)
+
+
+class AlbumCompletenessRequest(BaseModel):
+    """Request Tier 2 MusicBrainz completeness verification for an album."""
+
+    album_id: str
+    mbid: str | None = None
+    force_refresh: bool = False
+
+
+class AlbumCompletenessResponse(BaseModel):
+    """Result of verifying an album against a MusicBrainz release tracklist."""
+
+    album_id: str
+    mbid: str
+    release_title: str
+    release_artist: str
+    release_track_count: int
+    cached: bool = False
+    missing_tracks: list[MissingTrackItem] = Field(default_factory=list)
+    missing_track_count: int = 0
+
+
+class MissingTrackIgnoreRequest(BaseModel):
+    """Ignore or re-enable missing-track checks for a whole album or a specific track slot."""
+
+    album_id: str
+    disc_number: int = 0
+    track_number: int = 0
+    ignore: bool = True
+    clear_all: bool = False
+
+
+class BulkMissingTrackIgnoreRequest(BaseModel):
+    """Bulk ignore or re-enable missing-track checks across multiple albums at once."""
+
+    album_ids: list[str] = Field(..., min_length=1)
+    ignore: bool = True
+
+
+class LibrarySearchMissingResponse(BaseModel):
+    """Local library search results for locating a missing track."""
+
+    candidates: list[MissingTrackCandidate] = Field(default_factory=list)
+
+
 class AlbumGroup(BaseModel):
     """Album entry containing its sorted tracks, distinct artwork variants, and Navidrome diagnostics."""
 
@@ -267,6 +340,12 @@ class AlbumGroup(BaseModel):
     navidrome_warnings: list[NavidromeSplitWarning] = Field(default_factory=list)
     has_missing_metadata: bool = False
     needs_reorganize: bool = False
+    missing_tracks: list[MissingTrackItem] = Field(default_factory=list)
+    missing_track_count: int = 0
+    missing_tracks_ignored: bool = False
+    completeness_source: str | None = None  # "local" | "musicbrainz" | None
+    completeness_mbid: str | None = None
+    completeness_mb_title: str | None = None
     tracks: list[TrackMetadata] = Field(default_factory=list)
 
 

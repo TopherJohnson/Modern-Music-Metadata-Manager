@@ -72,10 +72,12 @@ async def preview_musicbrainz_release(
     payload: MusicBrainzPreviewRequest,
 ) -> MusicBrainzPreviewResponse:
     """Preview how local tracks match against a MusicBrainz release tracklist before applying."""
+    db = request.app.state.db
     lib = resolve_library(request)
 
     try:
         release = await get_release_detail(payload.mbid)
+        db.save_mb_release_cache(release)
     except MusicBrainzError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -144,6 +146,7 @@ async def apply_musicbrainz_release(
     if payload.apply_metadata or payload.apply_track_titles:
         try:
             release = await get_release_detail(payload.mbid)
+            db.save_mb_release_cache(release)
         except MusicBrainzError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 

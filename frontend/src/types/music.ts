@@ -71,6 +71,45 @@ export interface NavidromeSplitWarning {
   related_album_ids?: string[];
 }
 
+export interface MissingTrackCandidate {
+  path: string;
+  filename: string;
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  album_id: string;
+  album_track_count: number;
+  duration: number;
+  score: number;
+  reason: string;
+}
+
+export interface MissingTrackItem {
+  disc_number: number;
+  track_number: number; // 0 indicates an entire missing disc
+  title: string | null;
+  artist: string | null;
+  length_ms: number | null;
+  source: "local_gap" | "local_total" | "local_disc" | "musicbrainz";
+  ignored: boolean;
+  candidates: MissingTrackCandidate[];
+}
+
+export interface AlbumCompletenessResponse {
+  album_id: string;
+  mbid: string;
+  release_title: string;
+  release_artist: string;
+  release_track_count: number;
+  cached: boolean;
+  missing_tracks: MissingTrackItem[];
+  missing_track_count: number;
+}
+
+export interface LibrarySearchMissingResponse {
+  candidates: MissingTrackCandidate[];
+}
+
 export interface AlbumGroup {
   id: string;
   title: string;
@@ -85,6 +124,12 @@ export interface AlbumGroup {
   navidrome_warnings: NavidromeSplitWarning[];
   has_missing_metadata: boolean;
   needs_reorganize: boolean;
+  missing_tracks: MissingTrackItem[];
+  missing_track_count: number;
+  missing_tracks_ignored: boolean;
+  completeness_source: "local" | "musicbrainz" | null;
+  completeness_mbid: string | null;
+  completeness_mb_title: string | null;
   tracks: TrackMetadata[];
 }
 
