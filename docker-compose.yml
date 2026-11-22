@@ -18,7 +18,8 @@ services:
       # Optional Staging / Inbox directory for cleaning external downloads before importing
       # - /path/to/downloads:/downloads
       # Persistent lightweight SQLite cache, settings, and edit audit history
-      - ./config:/config
+      # Uses a service-scoped host folder so it won't collide with other services in a shared stack
+      - ./m4-metadata-manager/config:/config
     environment:
       # Match the UID/GID used by Navidrome so edited audio files retain expected ownership
       - PUID=1000
