@@ -1,9 +1,10 @@
 services:
   m4:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: modern-music-metadata-manager:latest
+    image: ghcr.io/topherjohnson/modern-music-metadata-manager:latest
+    # Uncomment to build locally instead of pulling from GitHub Container Registry:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: m4-metadata-manager
     restart: unless-stopped
     ports:

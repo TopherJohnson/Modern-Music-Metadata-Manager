@@ -15,13 +15,6 @@ This document tracks larger features and optional deeper integrations intentiona
 
 ---
 
-## Packaging & Release Automation
-
-- **GitHub Actions Multi-Arch GHCR Publishing:**
-  - Automated `.github/workflows/docker-publish.yml` building `linux/amd64` and `linux/arm64` images and pushing `ghcr.io/topherjohnson/modern-music-metadata-manager:latest` + semantic version tags so users can `docker compose pull` without building locally.
-
----
-
 ## Metadata & Library Automation
 
 - **AcoustID / Chromaprint Audio Fingerprinting:**

@@ -18,18 +18,22 @@ M⁴ ships as a **single Docker container** (FastAPI backend + compiled React/Vi
 - **Optional Navidrome Auto-Scan:** Configure `NAVIDROME_URL`, `NAVIDROME_USER`, and `NAVIDROME_PASS` to automatically trigger Navidrome's Subsonic `startScan` API after saving changes. Navidrome is **not required** to run M⁴.
 - **Permission-Safe Self-Hosting:** `PUID` and `PGID` user/group mapping at container startup (via `gosu`) ensures edited files keep the exact ownership Navidrome expects, without ever recursively `chown`-ing `/music`.
 
-See [ROADMAP.md](ROADMAP.md) for planned future features (deeper Navidrome admin integrations, GHCR prebuilt images, AcoustID fingerprinting, and more).
+See [ROADMAP.md](ROADMAP.md) for planned future features (deeper Navidrome admin integrations, AcoustID fingerprinting, background watcher, and more).
 
 ---
 
 ## Quick Start (Docker Compose)
 
-1. Edit `docker-compose.yml` and replace `/path/to/music` with the path to your music library (matching the `PUID` / `PGID` used by your Navidrome container).
-2. Build and start M⁴:
+Prebuilt multi-arch images (`linux/amd64` and `linux/arm64`) are published automatically to GitHub Container Registry (`ghcr.io/topherjohnson/modern-music-metadata-manager`).
+
+1. Copy [docker-compose.yml](docker-compose.yml) and replace `/path/to/music` with the path to your music library (matching the `PUID` / `PGID` used by your Navidrome container).
+2. Pull and start M⁴:
 
 ```bash
-docker compose up --build
+docker compose pull && docker compose up -d
 ```
+
+*(Pin a specific release such as `ghcr.io/topherjohnson/modern-music-metadata-manager:0.5.0`, or uncomment the `build:` block in `docker-compose.yml` to build locally from source.)*
 
 3. Open the web UI at `http://localhost:8080` (or verify container health at `http://localhost:8080/api/health`).
 
