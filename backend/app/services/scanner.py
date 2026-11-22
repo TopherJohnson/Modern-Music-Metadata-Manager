@@ -461,7 +461,8 @@ def build_library_response(
     )
 
 
-_NORM_PUNCT_RE = re.compile(r"[^a-z0-9]+")
+from app.services.musicbrainz import _strip_latin_accents_preserve_unicode
+
 _SERIES_TOKEN_RE = re.compile(
     r"\b(?:\d+|ii|iii|iv|v|vi|vii|viii|ix|x)\b",
     re.IGNORECASE,
@@ -472,9 +473,18 @@ _GENERIC_DUMP_DIRS: frozenset[str] = frozenset(
 
 
 def _normalize_album_key(value: str) -> str:
-    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-    replaced = folded.lower().replace("&", " and ")
-    return _NORM_PUNCT_RE.sub(" ", replaced).strip()
+    folded = _strip_latin_accents_preserve_unicode(value).replace("&", " and ")
+    tokens: list[str] = []
+    current: list[str] = []
+    for ch in folded:
+        if ch.isalnum():
+            current.append(ch)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return " ".join(tokens).strip()
 
 
 def _extract_series_tokens(norm_title: str) -> tuple[str, ...]:

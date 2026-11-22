@@ -2182,3 +2182,263 @@ def test_in_app_integration_settings_and_live_reload(
         assert tc.get("/api/health").json()["slskd_configured"] is False
 
 
+def test_musicbrainz_non_latin_cjk_title_matching() -> None:
+    """Issue #13: Unicode-aware title normalization & track matching for Japanese, Korean, Cyrillic, Greek, and accented Latin."""
+    from app.models import MusicBrainzTrackInfo, TrackMetadata
+    from app.services.musicbrainz import (
+        _normalize_title,
+        _title_similarity,
+        match_tracks_to_release,
+    )
+
+    # 1. Normalization & similarity across scripts
+    assert _normalize_title("覇王樹") == "覇王樹"
+    assert _normalize_title("晴伝説") == "晴伝説"
+    assert _normalize_title("ガチ桜") == "ガチ桜"
+    # Full-width vs half-width katakana fold identically via NFKC
+    assert _normalize_title("ｶﾗｽ") == _normalize_title("カラス")
+    # Hiragana vs Katakana fold cleanly in _title_similarity
+    assert _title_similarity("からす", "カラス") >= 0.95
+    assert _title_similarity("ｶﾗｽ", "カラス") == 1.0
+    # Short CJK containment boost (>=2 chars)
+    assert _title_similarity("晴伝説", "晴伝説 〜Original Mix〜") >= 0.85
+    # Korean (Hangul), Cyrillic, Greek
+    assert _title_similarity("봄날", "봄날 (Spring Day)") >= 0.85
+    assert _title_similarity("Группа крови", "Группа крови") == 1.0
+    assert _title_similarity("Θάλασσα", "Θαλασσα") == 1.0
+    # Accented Latin regression check
+    assert _normalize_title("Café del Mar (Remastered)") == "cafe del mar"
+    assert _title_similarity("Café", "Cafe") == 1.0
+
+    # 2. Reported Japanese album scenario (湘南乃風):
+    # Track 4 "覇王樹" has a large duration difference (4:40 local vs 6:01 MB) -> must still match by title with high confidence!
+    # Tracks 5..8 ("晴伝説", "ガチ桜", "親友よ", "カラス") sit at different positions on the MB release (#10, #9, #11, #12)
+    # and must all match their true MB tracks by title across the full release tracklist rather than falling back to positional slots #5..#8!
+    # And an extra bonus track #99 ("未収録ボーナス曲") not on the release stays unmatched.
+    mb_tracks = [
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=4, track_total=12,
+            title="覇王樹", length_ms=361000,  # 6:01
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=5, track_total=12,
+            title="純恋歌", length_ms=432000,  # 7:12
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=6, track_total=12,
+            title="睡蓮花", length_ms=439000,  # 7:19
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=7, track_total=12,
+            title="黄金魂", length_ms=335000,  # 5:35
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=8, track_total=12,
+            title="恋時雨", length_ms=390000,  # 6:30
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=9, track_total=12,
+            title="ガチ桜", length_ms=296000,  # 4:56 — sits at #9 on MB release!
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=10, track_total=12,
+            title="晴伝説", length_ms=242000,  # 4:02 — sits at #10 on MB release!
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=11, track_total=12,
+            title="親友よ", length_ms=178000,  # 2:58 — sits at #11 on MB release!
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=12, track_total=12,
+            title="カラス", length_ms=166000,  # 2:46 — sits at #12 on MB release!
+        ),
+    ]
+
+    local_tracks = [
+        TrackMetadata(
+            path="04.flac", filename="04 覇王樹.flac", format="FLAC",
+            track_number="4", title="覇王樹", duration=280.0,  # 4:40
+        ),
+        TrackMetadata(
+            path="05.flac", filename="05 晴伝説.flac", format="FLAC",
+            track_number="5", title="晴伝説", duration=242.0,  # 4:02
+        ),
+        TrackMetadata(
+            path="06.flac", filename="06 ガチ桜.flac", format="FLAC",
+            track_number="6", title="ガチ桜", duration=296.0,  # 4:56
+        ),
+        TrackMetadata(
+            path="07.flac", filename="07 親友よ.flac", format="FLAC",
+            track_number="7", title="親友よ", duration=178.0,  # 2:58
+        ),
+        TrackMetadata(
+            path="08.flac", filename="08 ｶﾗｽ.flac", format="FLAC",
+            track_number="8", title="ｶﾗｽ", duration=166.0,  # 2:46 (half-width katakana)
+        ),
+        TrackMetadata(
+            path="99.flac", filename="99 未収録ボーナス曲.flac", format="FLAC",
+            track_number="99", title="未収録ボーナス曲", duration=120.0,
+        ),
+    ]
+
+    matches = match_tracks_to_release(local_tracks, mb_tracks)
+    by_path = {m.local_path: m for m in matches}
+
+    # Track 4 "覇王樹" matches MB #4 "覇王樹" with high confidence despite 81s duration diff
+    assert by_path["04.flac"].matched is True
+    assert by_path["04.flac"].mb_track_number == 4
+    assert by_path["04.flac"].mb_title == "覇王樹"
+    assert by_path["04.flac"].confidence == "high"
+
+    # Shuffled tracks 5, 6, 7, 8 find their true MB positions (#10, #9, #11, #12) by title
+    assert by_path["05.flac"].matched is True
+    assert by_path["05.flac"].mb_track_number == 10
+    assert by_path["05.flac"].mb_title == "晴伝説"
+    assert by_path["05.flac"].confidence == "high"
+
+    assert by_path["06.flac"].matched is True
+    assert by_path["06.flac"].mb_track_number == 9
+    assert by_path["06.flac"].mb_title == "ガチ桜"
+    assert by_path["06.flac"].confidence == "high"
+
+    assert by_path["07.flac"].matched is True
+    assert by_path["07.flac"].mb_track_number == 11
+    assert by_path["07.flac"].mb_title == "親友よ"
+    assert by_path["07.flac"].confidence == "high"
+
+    assert by_path["08.flac"].matched is True
+    assert by_path["08.flac"].mb_track_number == 12
+    assert by_path["08.flac"].mb_title == "カラス"
+    assert by_path["08.flac"].confidence == "high"
+
+    # Bonus track #99 is not on this MB release and stays unmatched
+    assert by_path["99.flac"].matched is False
+    assert by_path["99.flac"].match_method == "unmatched"
+    assert by_path["99.flac"].mb_title is None
+
+
+def test_slskd_search_cleanup_and_ttl_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #14: delete M⁴-created slskd searches on close/re-search/queue, ignore non-M⁴ searches, tolerate 404, and sweep expired TTL entries."""
+    import asyncio
+    import httpx
+    from app.services import slskd as slskd_service
+
+    music_dir = tmp_path / "music"
+    config_dir = tmp_path / "config"
+    music_dir.mkdir()
+    config_dir.mkdir()
+
+    slskd_service._SEARCH_CONTEXT.clear()
+    slskd_service._OWNED_SEARCH_IDS.clear()
+
+    put_calls: list[str] = []
+    delete_calls: list[str] = []
+    return_404_for: set[str] = set()
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str, headers=None, json=None):
+            if url.endswith("/api/v0/searches"):
+                sid = json.get("id")
+                return httpx.Response(
+                    200,
+                    json={"id": sid, "searchText": json.get("searchText"), "state": "Completed", "isComplete": True},
+                    request=httpx.Request("POST", url),
+                )
+            return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+        async def get(self, url: str, headers=None):
+            if "/responses" in url:
+                return httpx.Response(200, json=[], request=httpx.Request("GET", url))
+            if "/api/v0/searches/" in url:
+                sid = url.rsplit("/", 1)[-1]
+                return httpx.Response(
+                    200,
+                    json={"id": sid, "state": "Completed", "isComplete": True, "responseCount": 0},
+                    request=httpx.Request("GET", url),
+                )
+            return httpx.Response(200, json=[], request=httpx.Request("GET", url))
+
+        async def put(self, url: str, headers=None):
+            sid = url.rsplit("/", 1)[-1]
+            put_calls.append(sid)
+            return httpx.Response(200, request=httpx.Request("PUT", url))
+
+        async def delete(self, url: str, headers=None, params=None):
+            sid = url.rsplit("/", 1)[-1]
+            delete_calls.append(sid)
+            status = 404 if sid in return_404_for else 200
+            return httpx.Response(status, request=httpx.Request("DELETE", url))
+
+    monkeypatch.setattr(slskd_service.httpx, "AsyncClient", FakeAsyncClient)
+
+    settings = Settings(
+        music_dir=music_dir,
+        config_dir=config_dir,
+        static_dir=None,
+        navidrome_url=None,
+        navidrome_user=None,
+        navidrome_pass=None,
+        navidrome_auto_scan=False,
+        log_level="warning",
+        staging_dir=None,
+        slskd_url="http://slskd:5030",
+        slskd_api_key="test-key",
+    )
+
+    with TestClient(create_app(settings=settings)) as tc:
+        # 1. Start search 1 (M⁴ records ownership)
+        s1 = tc.post("/api/slskd/search", json={"query": "Stevie Wonder", "timeout_sec": 1.0})
+        assert s1.status_code == 200
+        sid1 = s1.json()["search_id"]
+        assert sid1 in slskd_service._OWNED_SEARCH_IDS
+
+        # 2. Frontend calls DELETE /api/slskd/search/{sid1} (e.g. on close / re-search / queue)
+        del1 = tc.delete(f"/api/slskd/search/{sid1}")
+        assert del1.status_code == 200
+        assert del1.json() == {"ok": True, "deleted": True}
+        assert sid1 in put_calls
+        assert sid1 in delete_calls
+        assert sid1 not in slskd_service._OWNED_SEARCH_IDS
+        assert sid1 not in slskd_service._SEARCH_CONTEXT
+
+        # 3. Attempting to delete a manual search ID that M⁴ never created is safely ignored
+        manual_id = "user-manual-slskd-search-id"
+        del_manual = tc.delete(f"/api/slskd/search/{manual_id}")
+        assert del_manual.status_code == 200
+        assert del_manual.json() == {"ok": True, "deleted": False}
+        assert manual_id not in delete_calls
+
+        # 4. 404 from slskd (already deleted) is tolerated as success
+        s2 = tc.post("/api/slskd/search", json={"query": "Boards of Canada", "timeout_sec": 1.0})
+        sid2 = s2.json()["search_id"]
+        return_404_for.add(sid2)
+        del2 = tc.delete(f"/api/slskd/search/{sid2}")
+        assert del2.status_code == 200
+        assert del2.json() == {"ok": True, "deleted": True}
+        assert sid2 in delete_calls
+
+        # 5. TTL eviction safety net automatically deletes expired M⁴ searches in slskd
+        s3 = tc.post("/api/slskd/search", json={"query": "Daft Punk", "timeout_sec": 1.0})
+        sid3 = s3.json()["search_id"]
+        old_ts, old_ctx = slskd_service._SEARCH_CONTEXT[sid3]
+        slskd_service._SEARCH_CONTEXT[sid3] = (old_ts - slskd_service._SEARCH_CTX_TTL - 10.0, old_ctx)
+
+        evicted = asyncio.run(slskd_service.sweep_expired_slskd_searches(settings))
+        assert sid3 in evicted
+        assert sid3 in delete_calls
+        assert sid3 not in slskd_service._SEARCH_CONTEXT
+        assert sid3 not in slskd_service._OWNED_SEARCH_IDS
+
+
+

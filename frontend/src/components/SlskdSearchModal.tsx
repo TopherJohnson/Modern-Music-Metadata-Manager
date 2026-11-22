@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  deleteSlskdSearch,
   formatDuration,
   formatFileSize,
   queueSlskdDownload,
@@ -57,8 +58,25 @@ export function SlskdSearchModal({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SlskdSearchResponse | null>(null);
+  const [searchCleanedUp, setSearchCleanedUp] = useState(false);
   const [queueingKey, setQueueingKey] = useState<string | null>(null);
   const [queuedKeys, setQueuedKeys] = useState<Set<string>>(new Set());
+
+  // Track the currently live slskd search ID and modal open generation so we never leak searches
+  const liveSearchIdRef = useRef<string | null>(null);
+  const isOpenRef = useRef<boolean>(false);
+  const searchSeqRef = useRef<number>(0);
+
+  const cleanupLiveSearch = useCallback((idToClean?: string | null) => {
+    const targetId = idToClean !== undefined ? idToClean : liveSearchIdRef.current;
+    if (!targetId) return;
+    if (liveSearchIdRef.current === targetId) {
+      liveSearchIdRef.current = null;
+    }
+    void deleteSlskdSearch(targetId, { keepalive: true }).catch(() => {
+      // Best-effort cleanup; backend TTL sweep acts as a fallback safety net
+    });
+  }, []);
 
   const runSearch = useCallback(
     async (
@@ -67,7 +85,11 @@ export function SlskdSearchModal({
       item: MissingTrackItem | null
     ) => {
       if (!qText.trim()) return;
+      // Clean up any previous live search before starting a new one
+      cleanupLiveSearch();
+      const mySeq = ++searchSeqRef.current;
       setSearching(true);
+      setSearchCleanedUp(false);
       setError(null);
       try {
         const res = await searchSlskd({
@@ -78,39 +100,85 @@ export function SlskdSearchModal({
           expectedLengthMs: item?.length_ms ?? null,
           timeoutSec: 5.0,
         });
+        // If modal closed or another search started while this request was in flight, delete immediately
+        if (!isOpenRef.current || searchSeqRef.current !== mySeq) {
+          cleanupLiveSearch(res.search_id);
+          return;
+        }
+        liveSearchIdRef.current = res.search_id;
         setResult(res);
       } catch (err) {
+        if (!isOpenRef.current || searchSeqRef.current !== mySeq) {
+          return;
+        }
         setError(err instanceof Error ? err.message : "slskd search failed");
         setResult(null);
       } finally {
-        setSearching(false);
+        if (isOpenRef.current && searchSeqRef.current === mySeq) {
+          setSearching(false);
+        }
       }
     },
-    []
+    [cleanupLiveSearch]
   );
 
   useEffect(() => {
-    if (!album) return;
+    if (!album) {
+      isOpenRef.current = false;
+      cleanupLiveSearch();
+      return;
+    }
+    isOpenRef.current = true;
     const artist = album.artist === "Unknown Artist" ? "" : album.artist;
     const initialQuery = missingItem?.title
       ? `${artist} ${missingItem.title}`.trim()
       : `${artist} ${album.title === "Unknown Album" ? "" : album.title}`.trim();
     setQuery(initialQuery);
     setResult(null);
+    setSearchCleanedUp(false);
     setError(null);
     if (initialQuery) {
       void runSearch(initialQuery, album, missingItem);
     }
-  }, [album, missingItem, runSearch]);
+    return () => {
+      cleanupLiveSearch();
+    };
+  }, [album, missingItem, runSearch, cleanupLiveSearch]);
+
+  useEffect(() => {
+    function handlePageHide() {
+      cleanupLiveSearch();
+    }
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handlePageHide);
+      isOpenRef.current = false;
+      cleanupLiveSearch();
+    };
+  }, [cleanupLiveSearch]);
+
+  const handleCloseModal = useCallback(() => {
+    isOpenRef.current = false;
+    cleanupLiveSearch();
+    onClose();
+  }, [cleanupLiveSearch, onClose]);
+
+  const handleOpenDownloadsAndClose = useCallback(() => {
+    isOpenRef.current = false;
+    cleanupLiveSearch();
+    onOpenDownloads();
+  }, [cleanupLiveSearch, onOpenDownloads]);
 
   useEffect(() => {
     if (!album) return;
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") handleCloseModal();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [album, onClose]);
+  }, [album, handleCloseModal]);
 
   if (!album) return null;
 
@@ -121,6 +189,11 @@ export function SlskdSearchModal({
 
   const handleRefreshPeers = async () => {
     if (!result?.search_id) return;
+    // If the search was already cleaned up after queuing a download, re-run the search cleanly
+    if (searchCleanedUp || !liveSearchIdRef.current) {
+      void runSearch(query, album, missingItem);
+      return;
+    }
     setRefreshing(true);
     setError(null);
     try {
@@ -142,6 +215,11 @@ export function SlskdSearchModal({
         { filename: cand.filename, size: cand.size },
       ]);
       setQueuedKeys((prev) => new Set(prev).add(key));
+      // Remove the completed search from slskd immediately while keeping local candidates rendered
+      if (liveSearchIdRef.current) {
+        cleanupLiveSearch();
+        setSearchCleanedUp(true);
+      }
       onQueued(cand.username, cand.basename);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not queue download");
@@ -156,7 +234,7 @@ export function SlskdSearchModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) handleCloseModal();
       }}
     >
       <div
@@ -201,7 +279,7 @@ export function SlskdSearchModal({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={onOpenDownloads}
+              onClick={handleOpenDownloadsAndClose}
               className="m4-btn-secondary h-7 px-2.5 text-[11px]"
             >
               <Download className="h-3 w-3 text-accent" />
@@ -209,7 +287,7 @@ export function SlskdSearchModal({
             </button>
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleCloseModal}
               className="rounded-lg p-1 text-ink-muted hover:bg-surface-elevated hover:text-ink-primary cursor-pointer"
               aria-label="Close modal"
             >
@@ -278,10 +356,14 @@ export function SlskdSearchModal({
           {result && (
             <button
               type="button"
-              disabled={refreshing || searching}
+              disabled={refreshing || searching || searchCleanedUp}
               onClick={handleRefreshPeers}
               className="m4-btn-secondary text-xs"
-              title="Re-fetch late-arriving peer responses for this search"
+              title={
+                searchCleanedUp
+                  ? "Search removed from slskd after queuing — click Search to query again"
+                  : "Re-fetch late-arriving peer responses for this search"
+              }
             >
               <RefreshCw
                 className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}

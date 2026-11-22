@@ -32,8 +32,10 @@ _AUDIO_EXTENSIONS: frozenset[str] = frozenset(
 )
 _LOSSLESS_FORMATS: frozenset[str] = frozenset({"FLAC", "WAV", "AIFF", "AIF", "ALAC"})
 
-# Remember ranking criteria per search_id so "Refresh Peers" re-ranks consistently
+# Remember ranking criteria per search_id so "Refresh Peers" re-ranks consistently,
+# and track M⁴-created search IDs so we never delete searches started manually in slskd.
 _SEARCH_CONTEXT: dict[str, tuple[float, dict[str, Any]]] = {}
+_OWNED_SEARCH_IDS: set[str] = set()
 _SEARCH_CTX_TTL = 1800.0
 
 
@@ -304,6 +306,99 @@ async def _fetch_search_results(
     )
 
 
+async def _stop_and_delete_search_http(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    search_id: str,
+) -> bool:
+    """Stop (best-effort PUT) and delete (DELETE) a single search ID on slskd, tolerating 404."""
+    headers = _headers(settings)
+    encoded_id = urllib.parse.quote(search_id, safe="")
+    url = f"{settings.slskd_url}/api/v0/searches/{encoded_id}"
+
+    # Best-effort stop in case the search is still active in slskd
+    try:
+        await client.put(url, headers=headers)
+    except httpx.HTTPError:
+        pass
+
+    resp = await client.delete(url, headers=headers)
+    if resp.status_code == 404:
+        return True
+    resp.raise_for_status()
+    return True
+
+
+async def delete_slskd_search(
+    settings: Settings,
+    search_id: str,
+    *,
+    require_owned: bool = True,
+) -> bool:
+    """Stop and delete an M⁴-created search from slskd (Issue #14).
+
+    Never deletes searches that were not created by M⁴ when `require_owned=True`.
+    Treats HTTP 404 (already deleted in slskd) as success.
+    """
+    _headers(settings)
+    cleaned_id = search_id.strip()
+    if not cleaned_id:
+        return False
+
+    is_owned = cleaned_id in _OWNED_SEARCH_IDS or cleaned_id in _SEARCH_CONTEXT
+    if require_owned and not is_owned:
+        logger.debug(
+            "Skipping delete for slskd search %s (not created by M⁴)", cleaned_id
+        )
+        return False
+
+    _SEARCH_CONTEXT.pop(cleaned_id, None)
+    _OWNED_SEARCH_IDS.discard(cleaned_id)
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            return await _stop_and_delete_search_http(client, settings, cleaned_id)
+    except httpx.HTTPError as exc:
+        raise SlskdError(f"Could not delete slskd search {cleaned_id}: {exc}") from exc
+
+
+async def sweep_expired_slskd_searches(
+    settings: Settings,
+    *,
+    now: float | None = None,
+) -> list[str]:
+    """Evict expired entries from `_SEARCH_CONTEXT` and delete them from slskd (Issue #14 safety net)."""
+    ts_now = now if now is not None else time.monotonic()
+    expired_ids = [
+        k for k, (ts, _) in list(_SEARCH_CONTEXT.items()) if ts_now - ts > _SEARCH_CTX_TTL
+    ]
+    if not expired_ids:
+        return []
+
+    for old_id in expired_ids:
+        _SEARCH_CONTEXT.pop(old_id, None)
+        _OWNED_SEARCH_IDS.discard(old_id)
+
+    if not settings.slskd_configured:
+        return expired_ids
+
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            for old_id in expired_ids:
+                try:
+                    await _stop_and_delete_search_http(client, settings, old_id)
+                except httpx.HTTPError as exc:
+                    logger.debug(
+                        "Best-effort TTL cleanup of slskd search %s failed: %s",
+                        old_id,
+                        exc,
+                    )
+    except Exception as exc:
+        logger.debug("Best-effort TTL slskd sweep failed: %s", exc)
+
+    return expired_ids
+
+
 async def search_slskd(
     settings: Settings,
     payload: SlskdSearchRequest,
@@ -312,10 +407,9 @@ async def search_slskd(
     headers = _headers(settings)
     search_id = str(uuid.uuid4())
 
-    # Evict stale search contexts
+    # Evict and delete stale M⁴ search contexts in slskd
     now = time.monotonic()
-    for old_id in [k for k, (ts, _) in _SEARCH_CONTEXT.items() if now - ts > _SEARCH_CTX_TTL]:
-        _SEARCH_CONTEXT.pop(old_id, None)
+    await sweep_expired_slskd_searches(settings, now=now)
 
     ctx = {
         "query": payload.query.strip(),
@@ -325,6 +419,7 @@ async def search_slskd(
         "expected_length_ms": payload.expected_length_ms,
     }
     _SEARCH_CONTEXT[search_id] = (now, ctx)
+    _OWNED_SEARCH_IDS.add(search_id)
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -342,7 +437,10 @@ async def search_slskd(
             created = start_resp.json() if start_resp.content else {}
             actual_id = str(created.get("id") or search_id)
             if actual_id != search_id:
+                _SEARCH_CONTEXT.pop(search_id, None)
+                _OWNED_SEARCH_IDS.discard(search_id)
                 _SEARCH_CONTEXT[actual_id] = (now, ctx)
+                _OWNED_SEARCH_IDS.add(actual_id)
                 search_id = actual_id
 
             deadline = time.monotonic() + payload.timeout_sec
@@ -420,8 +518,9 @@ def _classify_transfer_state(state: str) -> str:
 
 
 async def list_slskd_downloads(settings: Settings) -> SlskdDownloadsResponse:
-    """Fetch current download transfers from slskd."""
+    """Fetch current download transfers from slskd (and sweep any expired M⁴ search contexts)."""
     headers = _headers(settings)
+    await sweep_expired_slskd_searches(settings)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
