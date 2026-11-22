@@ -492,7 +492,7 @@ export function MusicBrainzModal({
                     Track Mapping Preview
                   </h3>
                   <p className="text-[11px] text-ink-muted">
-                    Matched by disc/track #, duration, and title — unmatched tracks stay untouched
+                    Matched by title, disc/track #, and duration — unmatched tracks stay untouched
                   </p>
                 </div>
 

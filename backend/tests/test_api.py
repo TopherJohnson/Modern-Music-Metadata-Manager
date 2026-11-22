@@ -1023,7 +1023,7 @@ def test_musicbrainz_track_matching_missing_track_one_and_unmatched(
 
     by_path = {m["local_path"]: m for m in prev["matches"]}
     assert by_path[paths[0]]["matched"] is True
-    assert by_path[paths[0]]["match_method"] == "disc_track"
+    assert by_path[paths[0]]["match_method"] in {"title", "title_duration"}
     assert by_path[paths[0]]["mb_track_number"] == 2
     assert by_path[paths[0]]["mb_title"] == "Music Is Math (Official)"
     assert by_path[paths[1]]["matched"] is False
@@ -1053,7 +1053,7 @@ def test_musicbrainz_track_matching_missing_track_one_and_unmatched(
 
 
 def test_musicbrainz_matcher_title_duration_and_multidisc() -> None:
-    """Verify title similarity, pure duration fallback, and multi-disc disambiguation."""
+    """Verify title-first matching, disc/track fallback for generic titles, and pure duration fallback."""
     from app.models import MusicBrainzTrackInfo, TrackMetadata
     from app.services.musicbrainz import match_tracks_to_release
 
@@ -1073,17 +1073,17 @@ def test_musicbrainz_matcher_title_duration_and_multidisc() -> None:
     ]
 
     local_tracks = [
-        # Disc 2 Track 1 with explicit disc tag
+        # Disc 2 Track 1 with generic title -> falls back cleanly to Stage 2 disc_track
         TrackMetadata(
             path="d2t1.flac", filename="d2t1.flac", format="FLAC",
-            disc_number="2/2", track_number="1/1", title="Encore", duration=311.5,
+            disc_number="2/2", track_number="1/1", title="Track 01", duration=311.5,
         ),
-        # No track number at all -> matched by title + duration
+        # No track number at all -> matched in Stage 1 by title + duration
         TrackMetadata(
             path="midnight.flac", filename="midnight.flac", format="FLAC",
             title="Midnight Express (Remastered)", duration=246.0,
         ),
-        # Untitled & unnumbered -> matched unambiguously by duration (180s)
+        # Untitled & unnumbered -> matched unambiguously in Stage 3 by duration (180s)
         TrackMetadata(
             path="untitled.flac", filename="TrackUnknown.flac", format="FLAC",
             title=None, duration=181.0,
@@ -1103,6 +1103,186 @@ def test_musicbrainz_matcher_title_duration_and_multidisc() -> None:
     assert matches[2].matched is True
     assert matches[2].mb_title == "Opening Overture"
     assert matches[2].match_method == "duration"
+
+
+def test_musicbrainz_matcher_prioritizes_title_over_wrong_track_number() -> None:
+    """Reopened Issue #3: misnumbered/shifted local track numbers must match by title first, with (disc, track) tie-breaking."""
+    from app.models import MusicBrainzTrackInfo, TrackMetadata
+    from app.services.musicbrainz import match_tracks_to_release
+
+    mb_tracks = [
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=1, track_total=4,
+            title="Intro", length_ms=60000,
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=2, track_total=4,
+            title="Superstition", length_ms=266000,
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=3, track_total=4,
+            title="Sir Duke", length_ms=234000,
+        ),
+        MusicBrainzTrackInfo(
+            disc_number=1, disc_total=1, track_number=4, track_total=4,
+            title="Intro", length_ms=60000,
+        ),
+    ]
+
+    local_tracks = [
+        # Local track #1 is actually MB track #3 ("Sir Duke") — shifted numbering!
+        TrackMetadata(
+            path="01.flac", filename="01 - Sir Duke.flac", format="FLAC",
+            track_number="1", title="Sir Duke", duration=234.0,
+        ),
+        # Local track #3 is actually MB track #2 ("Superstition")
+        TrackMetadata(
+            path="03.flac", filename="03 - Superstition.flac", format="FLAC",
+            track_number="3", title="Superstition", duration=265.0,
+        ),
+        # Duplicate title "Intro" at track #4 should tie-break to MB track #4 (not #1)
+        TrackMetadata(
+            path="04.flac", filename="04 - Intro.flac", format="FLAC",
+            track_number="4", title="Intro", duration=60.0,
+        ),
+    ]
+
+    matches = match_tracks_to_release(local_tracks, mb_tracks)
+    assert matches[0].matched is True
+    assert matches[0].mb_track_number == 3
+    assert matches[0].mb_title == "Sir Duke"
+    assert matches[0].match_method == "title_duration"
+
+    assert matches[1].matched is True
+    assert matches[1].mb_track_number == 2
+    assert matches[1].mb_title == "Superstition"
+    assert matches[1].match_method == "title_duration"
+
+    assert matches[2].matched is True
+    assert matches[2].mb_track_number == 4
+    assert matches[2].mb_title == "Intro"
+    assert matches[2].match_method == "title_duration"
+
+
+def test_cross_album_split_detection_and_guards() -> None:
+    """Issue #2: detect cross-album near-duplicate/shared-folder/shared-MBID splits without Vol. 1/2 false positives."""
+    from app.models import TrackMetadata
+    from app.services.scanner import build_library_response
+
+    tracks = [
+        # 1. Punctuation split (same artist)
+        TrackMetadata(
+            path="Stevie Wonder/Album A/01.mp3", filename="01.mp3", format="MP3",
+            artist="Stevie Wonder", album_artist="Stevie Wonder",
+            album="Song Review: A Greatest Hits Collection", title="Superstition",
+        ),
+        TrackMetadata(
+            path="Stevie Wonder/Album B/02.mp3", filename="02.mp3", format="MP3",
+            artist="Stevie Wonder", album_artist="Stevie Wonder",
+            album="Song Review (A Greatest Hits Collection)", title="Sir Duke",
+        ),
+        # 2. Fuzzy typo split (same artist)
+        TrackMetadata(
+            path="Pink Floyd/DSOTM1/01.flac", filename="01.flac", format="FLAC",
+            artist="Pink Floyd", album_artist="Pink Floyd",
+            album="The Dark Side of the Moon", title="Time",
+        ),
+        TrackMetadata(
+            path="Pink Floyd/DSOTM2/02.flac", filename="02.flac", format="FLAC",
+            artist="Pink Floyd", album_artist="Pink Floyd",
+            album="The Dark Side of the Moom", title="Money",
+        ),
+        # 3. Shared folder split (different album tags in same non-generic folder)
+        TrackMetadata(
+            path="Daft Punk/Discovery/01.flac", filename="01.flac", format="FLAC",
+            artist="Daft Punk", album_artist="Daft Punk",
+            album="Discovery", title="One More Time",
+        ),
+        TrackMetadata(
+            path="Daft Punk/Discovery/02.flac", filename="02.flac", format="FLAC",
+            artist="Daft Punk", album_artist="Daft Punk",
+            album="Discovery (Japanese Bonus)", title="Aerodynamic",
+        ),
+        # 4. Shared MusicBrainz Album ID across two differently named albums
+        TrackMetadata(
+            path="Miles Davis/KOB1/01.flac", filename="01.flac", format="FLAC",
+            artist="Miles Davis", album_artist="Miles Davis",
+            album="Kind of Blue", title="So What",
+            musicbrainz_album_id="99999999-9999-9999-9999-999999999999",
+        ),
+        TrackMetadata(
+            path="Miles Davis/KOB2/02.flac", filename="02.flac", format="FLAC",
+            artist="Miles Davis", album_artist="Miles Davis",
+            album="K.O.B. Legacy", title="Freddie Freeloader",
+            musicbrainz_album_id="99999999-9999-9999-9999-999999999999",
+        ),
+        # 5. False-positive guards: Vol. 1 vs Vol. 2 and Chronicle II vs Chronicle III must NOT flag
+        TrackMetadata(
+            path="Queen/Vol1/01.mp3", filename="01.mp3", format="MP3",
+            artist="Queen", album_artist="Queen",
+            album="Greatest Hits Vol. 1", title="Bohemian Rhapsody",
+        ),
+        TrackMetadata(
+            path="Queen/Vol2/01.mp3", filename="01.mp3", format="MP3",
+            artist="Queen", album_artist="Queen",
+            album="Greatest Hits Vol. 2", title="Under Pressure",
+        ),
+        TrackMetadata(
+            path="CCR/II/01.mp3", filename="01.mp3", format="MP3",
+            artist="CCR", album_artist="CCR",
+            album="Chronicle II", title="Fortunate Son",
+        ),
+        TrackMetadata(
+            path="CCR/III/01.mp3", filename="01.mp3", format="MP3",
+            artist="CCR", album_artist="CCR",
+            album="Chronicle III", title="Bad Moon Rising",
+        ),
+    ]
+
+    lib = build_library_response(tracks)
+    albums_by_title = {
+        album.title: album
+        for artist in lib.artists
+        for album in artist.albums
+    }
+
+    def dup_warning(title: str):
+        return next(
+            (w for w in albums_by_title[title].navidrome_warnings if w.field == "duplicate_album"),
+            None,
+        )
+
+    # 1. Punctuation split detected & cross-linked
+    sw1 = dup_warning("Song Review: A Greatest Hits Collection")
+    sw2 = dup_warning("Song Review (A Greatest Hits Collection)")
+    assert sw1 is not None and sw2 is not None
+    assert sw1.severity == "split"
+    assert albums_by_title["Song Review (A Greatest Hits Collection)"].id in sw1.related_album_ids
+    assert albums_by_title["Song Review: A Greatest Hits Collection"].id in sw2.related_album_ids
+
+    # 2. Fuzzy typo split detected
+    pf1 = dup_warning("The Dark Side of the Moon")
+    pf2 = dup_warning("The Dark Side of the Moom")
+    assert pf1 is not None and pf2 is not None
+    assert albums_by_title["The Dark Side of the Moom"].id in pf1.related_album_ids
+
+    # 3. Shared folder split detected
+    dp1 = dup_warning("Discovery")
+    dp2 = dup_warning("Discovery (Japanese Bonus)")
+    assert dp1 is not None and dp2 is not None
+    assert "same folder" in dp1.message
+
+    # 4. Shared MBID split detected
+    md1 = dup_warning("Kind of Blue")
+    md2 = dup_warning("K.O.B. Legacy")
+    assert md1 is not None and md2 is not None
+    assert "MusicBrainz Album ID" in md1.message
+
+    # 5. Series / volume guards prevent false positives
+    assert dup_warning("Greatest Hits Vol. 1") is None
+    assert dup_warning("Greatest Hits Vol. 2") is None
+    assert dup_warning("Chronicle II") is None
+    assert dup_warning("Chronicle III") is None
 
 
 def test_merge_multiple_albums_and_single_batch_undo(client: TestClient) -> None:

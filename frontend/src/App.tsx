@@ -58,6 +58,7 @@ import type {
   TrackMetadata,
   TrackTags,
 } from "./types/music";
+import type { MissingFieldKey, MissingScopeMode } from "./utils/missingFields";
 
 const LIBRARY_STORAGE_KEY = "m4_active_library";
 
@@ -108,6 +109,8 @@ export function App() {
   const [liveTrack, setLiveTrack] = useState<TrackMetadata | null>(null);
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [albumFilter, setAlbumFilter] = useState<AlbumFilterMode>("all");
+  const [missingField, setMissingField] = useState<MissingFieldKey | null>(null);
+  const [missingScope, setMissingScope] = useState<MissingScopeMode>("any");
 
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -288,6 +291,7 @@ export function App() {
     setLiveTrack(null);
     setIsBulkMode(false);
     setAlbumFilter("all");
+    setMissingField(null);
     setHistoryOpen(false);
     setTrackMbTarget(null);
     setMbModal((prev) => ({ ...prev, open: false }));
@@ -586,6 +590,18 @@ export function App() {
     setMbModal({
       open: true,
       mode: "identify",
+      album: album.title === "Unknown Album" ? "" : album.title,
+      artist: album.artist === "Unknown Artist" ? "" : album.artist,
+      targetPaths: album.tracks.map((t) => t.path),
+      localTrackCount: album.track_count,
+    });
+  };
+
+  const handleFindAlbumCover = (album: AlbumGroup) => {
+    setSelectedAlbumId(album.id);
+    setMbModal({
+      open: true,
+      mode: "artwork",
       album: album.title === "Unknown Album" ? "" : album.title,
       artist: album.artist === "Unknown Artist" ? "" : album.artist,
       targetPaths: album.tracks.map((t) => t.path),
@@ -1131,6 +1147,8 @@ export function App() {
           selectedTrackPath={selectedTrackPath}
           isBulkEditingAlbum={isBulkMode}
           albumFilter={albumFilter}
+          missingField={missingField}
+          missingScope={missingScope}
           organizeEnabled={organizeSettings.enabled}
           artworkRevision={artworkRevision}
           loading={loading}
@@ -1140,6 +1158,7 @@ export function App() {
           onSelectTrack={handleSelectTrack}
           onStartBulkEdit={handleStartBulkEdit}
           onIdentifyAlbum={handleIdentifyAlbum}
+          onFindAlbumCover={handleFindAlbumCover}
           onIdentifyTrack={handleIdentifyTrack}
           onDeleteTrack={(track) => setDeleteTarget(track)}
           onMergeAlbums={(albums) => setMergeAlbumsTarget(albums)}
@@ -1149,6 +1168,8 @@ export function App() {
           }
           onOrganizeAlbum={handleOrganizeAlbum}
           onChangeAlbumFilter={setAlbumFilter}
+          onChangeMissingField={setMissingField}
+          onChangeMissingScope={setMissingScope}
           onRescan={handleRescan}
         />
 
