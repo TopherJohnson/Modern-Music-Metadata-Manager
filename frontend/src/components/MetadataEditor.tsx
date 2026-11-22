@@ -39,6 +39,7 @@ interface MetadataEditorProps {
   onDeleteArtwork: (path: string) => Promise<void>;
   onOpenMusicBrainz: (mode: MusicBrainzModalMode, targetPaths: string[]) => void;
   onIdentifyTrack: (track: TrackMetadata) => void;
+  onDeleteTrack: (track: TrackMetadata) => void;
 }
 
 interface FieldSpec {
@@ -162,6 +163,7 @@ export function MetadataEditor({
   onDeleteArtwork,
   onOpenMusicBrainz,
   onIdentifyTrack,
+  onDeleteTrack,
 }: MetadataEditorProps) {
   const isBulk = bulkAlbum !== null;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -839,15 +841,29 @@ export function MetadataEditor({
               >
                 {selectedTrack.path}
               </p>
-              <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-ink-muted">
-                <span>{selectedTrack.format}</span>
-                {selectedTrack.bitrate && (
-                  <span>{Math.round(selectedTrack.bitrate / 1000)} kbps</span>
-                )}
-                {selectedTrack.sample_rate && (
-                  <span>{(selectedTrack.sample_rate / 1000).toFixed(1)} kHz</span>
-                )}
-                <span>{formatFileSize(selectedTrack.file_size)}</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-ink-muted">
+                  <span>{selectedTrack.format}</span>
+                  {selectedTrack.bitrate && (
+                    <span>{Math.round(selectedTrack.bitrate / 1000)} kbps</span>
+                  )}
+                  {selectedTrack.sample_rate && (
+                    <span>{(selectedTrack.sample_rate / 1000).toFixed(1)} kHz</span>
+                  )}
+                  <span>{formatFileSize(selectedTrack.file_size)}</span>
+                </div>
+
+                <button
+                  id="editor-delete-track-btn"
+                  type="button"
+                  disabled={saving}
+                  onClick={() => onDeleteTrack(selectedTrack)}
+                  className="inline-flex items-center gap-1 rounded-md border border-danger/35 bg-danger/10 px-2 py-1 text-[10px] font-medium text-danger transition-colors hover:bg-danger/20 disabled:opacity-50 cursor-pointer"
+                  title="Permanently delete this track file from disk"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Delete File
+                </button>
               </div>
 
               {showRawTags && (

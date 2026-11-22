@@ -13,12 +13,14 @@ from app.models import (
     BulkUpdateResponse,
     CopyArtworkRequest,
     RawTagsResponse,
+    TrackDeleteResponse,
     TrackMetadata,
     TrackUpdateRequest,
     TrackUpdateResponse,
 )
 from app.routers._deps import resolve_library
 from app.services.navidrome import trigger_navidrome_scan
+from app.services.organizer import _TRACK_SIDECAR_EXTS, _prune_empty_parents
 from app.services.tags import (
     EDITABLE_FIELDS,
     InvalidTrackPathError,
@@ -28,6 +30,7 @@ from app.services.tags import (
     read_raw_tags,
     read_track_artwork,
     read_track_metadata,
+    resolve_track_path,
     write_track_artwork,
     write_track_metadata,
 )
@@ -123,6 +126,90 @@ async def put_track(
         settings, requested=payload.trigger_navidrome_scan and bool(updates)
     )
     return TrackUpdateResponse(track=after, navidrome_sync=navidrome_sync)
+
+
+@router.delete("/track", response_model=TrackDeleteResponse)
+async def delete_track(
+    request: Request,
+    path: str = Query(..., description="Relative POSIX path of the track inside the active library"),
+    delete_sidecars: bool = Query(default=True, description="Also delete matching track-level sidecars (.lrc/.txt)"),
+    cleanup_empty_dirs: bool = Query(default=True, description="Remove empty parent directories after deletion"),
+    trigger_navidrome_scan_flag: bool = Query(default=True, alias="trigger_navidrome_scan"),
+) -> TrackDeleteResponse:
+    """Permanently delete a single audio track file (and optional matching sidecars) from disk."""
+    settings = request.app.state.settings
+    db = request.app.state.db
+    lib = resolve_library(request)
+    root = lib.path.resolve()
+
+    try:
+        file_path, rel_path = resolve_track_path(root, path)
+    except Exception as exc:
+        _raise_http_for_tag_error(exc)
+
+    # Best-effort metadata snapshot for the audit log (allow deleting even corrupted files)
+    before_audit: dict[str, str | None] = {"path": rel_path}
+    try:
+        snap = read_track_metadata(root, rel_path)
+        before_audit.update(
+            {
+                "title": snap.title,
+                "artist": snap.artist,
+                "album": snap.album,
+                "format": snap.format,
+            }
+        )
+    except Exception:
+        pass
+
+    parent_dir = file_path.parent
+    stem_low = file_path.stem.casefold()
+
+    try:
+        file_path.unlink()
+    except Exception as exc:
+        _raise_http_for_tag_error(exc)
+
+    deleted_sidecars: list[str] = []
+    if delete_sidecars and parent_dir.is_dir():
+        for sibling in sorted(parent_dir.iterdir()):
+            if (
+                sibling.is_file()
+                and sibling.suffix.lower() in _TRACK_SIDECAR_EXTS
+                and sibling.stem.casefold() == stem_low
+            ):
+                try:
+                    sc_rel = sibling.relative_to(root).as_posix()
+                    sibling.unlink()
+                    deleted_sidecars.append(sc_rel)
+                except OSError:
+                    pass
+
+    removed_empty_dirs = 0
+    if cleanup_empty_dirs:
+        removed_empty_dirs = _prune_empty_parents(parent_dir, root)
+
+    db.remove_paths([rel_path], library_id=lib.id)
+    after_audit: dict[str, object] = {"deleted": "true"}
+    if deleted_sidecars:
+        after_audit["deleted_sidecars"] = ", ".join(deleted_sidecars)
+    db.record_audit(
+        path=rel_path,
+        action="delete_track",
+        before_tags=before_audit,
+        after_tags=after_audit,
+        library_id=lib.id,
+    )
+
+    navidrome_sync = await trigger_navidrome_scan(
+        settings, requested=trigger_navidrome_scan_flag
+    )
+    return TrackDeleteResponse(
+        deleted_path=rel_path,
+        deleted_sidecars=deleted_sidecars,
+        removed_empty_dirs=removed_empty_dirs,
+        navidrome_sync=navidrome_sync,
+    )
 
 
 @router.put("/tracks/bulk", response_model=BulkUpdateResponse)

@@ -18,6 +18,7 @@ import type {
   OrganizePreviewResponse,
   OrganizeSettings,
   RawTagsResponse,
+  TrackDeleteResponse,
   TrackMetadata,
   TrackUpdatePayload,
   TrackUpdateResponse,
@@ -135,6 +136,22 @@ export function updateTrack(payload: TrackUpdatePayload): Promise<TrackUpdateRes
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+}
+
+export function deleteTrack(
+  path: string,
+  options?: { deleteSidecars?: boolean; cleanupEmptyDirs?: boolean }
+): Promise<TrackDeleteResponse> {
+  const params = new URLSearchParams({ path });
+  if (options?.deleteSidecars !== undefined) {
+    params.set("delete_sidecars", String(options.deleteSidecars));
+  }
+  if (options?.cleanupEmptyDirs !== undefined) {
+    params.set("cleanup_empty_dirs", String(options.cleanupEmptyDirs));
+  }
+  return requestJson<TrackDeleteResponse>(`/api/track?${params.toString()}`, {
+    method: "DELETE",
   });
 }
 

@@ -11,6 +11,7 @@ import {
   Layers,
   Music,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import { formatDuration, getArtworkUrl } from "../api/client";
 import type { AlbumGroup, ArtistGroup, TrackMetadata } from "../types/music";
@@ -33,6 +34,7 @@ interface TrackListProps {
   onStartBulkEdit: (album: AlbumGroup) => void;
   onIdentifyAlbum: (album: AlbumGroup) => void;
   onIdentifyTrack: (track: TrackMetadata) => void;
+  onDeleteTrack: (track: TrackMetadata) => void;
   onOrganizeAlbum: (album: AlbumGroup) => void;
   onChangeAlbumFilter: (filter: AlbumFilterMode) => void;
   onRescan: () => void;
@@ -90,6 +92,7 @@ export function TrackList({
   onStartBulkEdit,
   onIdentifyAlbum,
   onIdentifyTrack,
+  onDeleteTrack,
   onOrganizeAlbum,
   onChangeAlbumFilter,
   onRescan,
@@ -628,7 +631,8 @@ export function TrackList({
               <th className="py-2 px-2">Title</th>
               <th className="hidden md:table-cell py-2 px-2">Artist</th>
               <th className="hidden sm:table-cell w-24 py-2 px-2 text-right">Format</th>
-              <th className="w-16 py-2 pl-2 pr-3 text-right">Time</th>
+              <th className="w-16 py-2 px-2 text-right">Time</th>
+              <th className="w-9 py-2 pl-1 pr-2 text-right" aria-label="Track actions" />
             </tr>
           </thead>
           <tbody className="divide-y divide-border-subtle/50 text-xs">
@@ -648,7 +652,7 @@ export function TrackList({
                 <tr
                   key={track.path}
                   onClick={() => onSelectTrack(track)}
-                  className={`cursor-pointer transition-colors ${
+                  className={`group cursor-pointer transition-colors ${
                     isSelected
                       ? "bg-accent-soft/80 text-ink-primary"
                       : "hover:bg-surface-elevated/70 text-ink-secondary"
@@ -708,12 +712,37 @@ export function TrackList({
                     {track.artist || "—"}
                   </td>
                   <td className="hidden sm:table-cell py-2.5 px-2 text-right">
-                    <span className="inline-block rounded border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-secondary">
+                    <span
+                      className="inline-block rounded border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-secondary"
+                      title={
+                        track.bitrate
+                          ? `${track.format} · ${Math.round(track.bitrate / 1000)} kbps`
+                          : track.format
+                      }
+                    >
                       {track.format}
                     </span>
                   </td>
-                  <td className="py-2.5 pl-2 pr-3 text-right font-mono text-[11px] text-ink-muted">
+                  <td className="py-2.5 px-2 text-right font-mono text-[11px] text-ink-muted">
                     {formatDuration(track.duration)}
+                  </td>
+                  <td className="py-2.5 pl-1 pr-2 text-right">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteTrack(track);
+                      }}
+                      className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-danger/15 hover:text-danger cursor-pointer ${
+                        isSelected
+                          ? "opacity-80 hover:opacity-100"
+                          : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                      }`}
+                      title={`Delete ${track.filename} from disk`}
+                      aria-label={`Delete ${track.title || track.filename}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </td>
                 </tr>
               );

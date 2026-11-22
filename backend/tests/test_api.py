@@ -906,6 +906,45 @@ def test_optional_basic_auth_cookie_and_header(tmp_path: Path) -> None:
         assert tc.get("/api/library").status_code == 401
 
 
+def test_delete_track_file_and_sidecars(client: TestClient) -> None:
+    music_dir = client.app.state.settings.music_dir
+    rel_mp3 = "Boards of Canada/Geogaddi/01 - Intro.mp3"
+    rel_flac = "Boards of Canada/Geogaddi/02 - Music Is Math.flac"
+    lrc_file = music_dir / "Boards of Canada" / "Geogaddi" / "01 - Intro.lrc"
+    lrc_file.write_text("[00:01.00] Intro lyrics\n", encoding="utf-8")
+
+    # Path traversal is rejected
+    assert client.delete("/api/track", params={"path": "../secret.mp3"}).status_code == 400
+
+    # Delete first track + matching .lrc sidecar (folder stays because FLAC remains)
+    res1 = client.delete("/api/track", params={"path": rel_mp3})
+    assert res1.status_code == 200
+    body1 = res1.json()
+    assert body1["deleted_path"] == rel_mp3
+    assert body1["deleted_sidecars"] == ["Boards of Canada/Geogaddi/01 - Intro.lrc"]
+    assert body1["removed_empty_dirs"] == 0
+    assert not (music_dir / rel_mp3).exists()
+    assert not lrc_file.exists()
+    assert (music_dir / rel_flac).is_file()
+
+    # Library now reflects 1 track
+    assert client.get("/api/library").json()["stats"]["track_count"] == 1
+
+    # Audit log recorded the non-undoable deletion
+    history = client.get("/api/history").json()
+    assert history[0]["action"] == "delete_track"
+    assert history[0]["path"] == rel_mp3
+    assert history[0]["can_undo"] is False
+
+    # Deleting the final track in the album prunes the empty parent directories
+    res2 = client.delete("/api/track", params={"path": rel_flac})
+    assert res2.status_code == 200
+    assert res2.json()["removed_empty_dirs"] >= 2
+    assert not (music_dir / "Boards of Canada").exists()
+    assert client.get("/api/library").json()["stats"]["track_count"] == 0
+
+
+
 
 
 

@@ -75,6 +75,7 @@ All library/track/history/organize endpoints target the default library unless s
 | `GET` | `/api/track?path=` | Read live metadata for a single track directly from disk |
 | `GET` | `/api/track/raw?path=` | Inspect all raw audio tag frames/atoms on a file |
 | `PUT` | `/api/track` | Write updated tags to a single track (and optionally trigger Navidrome scan) |
+| `DELETE` | `/api/track?path=` | Permanently delete a single track file (plus optional matching `.lrc`/`.txt` sidecars and empty parent folders) |
 | `PUT` | `/api/tracks/bulk` | Batch-update shared tags across multiple tracks (grouped under one `batch_id`) |
 | `GET` | `/api/track/artwork?path=` | Serve embedded front cover art for a track |
 | `PUT` | `/api/track/artwork` | Embed or replace cover art on one or more tracks |

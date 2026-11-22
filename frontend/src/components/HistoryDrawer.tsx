@@ -13,6 +13,7 @@ import {
   Pencil,
   RefreshCw,
   RotateCcw,
+  Trash2,
   X,
 } from "lucide-react";
 import { getHistory } from "../api/client";
@@ -33,7 +34,7 @@ const ACTION_META: Record<
   {
     label: string;
     batchLabel?: string;
-    kind: "tag" | "move" | "art" | "mb" | "undo";
+    kind: "tag" | "move" | "art" | "mb" | "undo" | "delete";
   }
 > = {
   update_track: { label: "Tag Edit", kind: "tag" },
@@ -49,6 +50,7 @@ const ACTION_META: Record<
     batchLabel: "Batch File Move",
     kind: "move",
   },
+  delete_track: { label: "File Deleted", kind: "delete" },
   update_artwork: {
     label: "Cover Upload",
     batchLabel: "Album Cover Upload",
@@ -156,7 +158,9 @@ function formatRelativeTime(iso: string): string {
   });
 }
 
-function renderActionIcon(kind: "tag" | "move" | "art" | "mb" | "undo") {
+function renderActionIcon(
+  kind: "tag" | "move" | "art" | "mb" | "undo" | "delete"
+) {
   switch (kind) {
     case "move":
       return <FolderTree className="h-3.5 w-3.5 text-accent" />;
@@ -166,6 +170,8 @@ function renderActionIcon(kind: "tag" | "move" | "art" | "mb" | "undo") {
       return <Globe className="h-3.5 w-3.5 text-accent" />;
     case "undo":
       return <RotateCcw className="h-3.5 w-3.5 text-ok" />;
+    case "delete":
+      return <Trash2 className="h-3.5 w-3.5 text-danger" />;
     default:
       return <Pencil className="h-3.5 w-3.5 text-ink-secondary" />;
   }

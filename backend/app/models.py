@@ -139,6 +139,15 @@ class TrackUpdateResponse(BaseModel):
     navidrome_sync: NavidromeSyncResult
 
 
+class TrackDeleteResponse(BaseModel):
+    """Response returned after permanently deleting an audio file from disk."""
+
+    deleted_path: str
+    deleted_sidecars: list[str] = Field(default_factory=list)
+    removed_empty_dirs: int = 0
+    navidrome_sync: NavidromeSyncResult
+
+
 class BulkUpdateRequest(BaseModel):
     """Payload for PUT /api/tracks/bulk to apply shared edits across multiple tracks."""
 

@@ -156,6 +156,13 @@ export interface TrackUpdateResponse {
   navidrome_sync: NavidromeSyncResult;
 }
 
+export interface TrackDeleteResponse {
+  deleted_path: string;
+  deleted_sidecars: string[];
+  removed_empty_dirs: number;
+  navidrome_sync: NavidromeSyncResult;
+}
+
 export interface BulkUpdatePayload extends Partial<TrackTags> {
   paths: string[];
   trigger_navidrome_scan?: boolean;

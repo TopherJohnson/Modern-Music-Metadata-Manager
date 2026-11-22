@@ -6,6 +6,7 @@ import {
   applyOrganize,
   copyArtwork,
   deleteArtwork,
+  deleteTrack,
   getAuthStatus,
   getHealth,
   getLibraries,
@@ -24,6 +25,7 @@ import {
   updateTracksBulk,
   uploadArtwork,
 } from "./api/client";
+import { DeleteTrackModal } from "./components/DeleteTrackModal";
 import { Header } from "./components/Header";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LoginScreen } from "./components/LoginScreen";
@@ -144,6 +146,8 @@ export function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [undoingId, setUndoingId] = useState<number | null>(null);
   const [undoingBatchId, setUndoingBatchId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<TrackMetadata | null>(null);
+  const [deletingTrack, setDeletingTrack] = useState(false);
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -880,6 +884,58 @@ export function App() {
     }
   };
 
+  const handleConfirmDeleteTrack = async (
+    track: TrackMetadata,
+    options: { deleteSidecars: boolean; cleanupEmptyDirs: boolean }
+  ) => {
+    setDeletingTrack(true);
+    try {
+      const res = await deleteTrack(track.path, options);
+      if (selectedTrackPath === track.path) {
+        setSelectedTrackPath(null);
+        setLiveTrack(null);
+      }
+      setDeleteTarget(null);
+      const updatedLib = await fetchLibrary(debouncedQuery, { silent: true });
+      // If the currently viewed album now has 0 tracks left, return cleanly to All Albums
+      if (updatedLib && selectedAlbumId) {
+        const stillExists = updatedLib.artists.some((artist) =>
+          artist.albums.some((album) => album.id === selectedAlbumId)
+        );
+        if (!stillExists) {
+          setSelectedAlbumId(null);
+          setIsBulkMode(false);
+        }
+      }
+      const details = [
+        res.deleted_sidecars.length > 0
+          ? `Removed ${res.deleted_sidecars.length} sidecar ${
+              res.deleted_sidecars.length === 1 ? "file" : "files"
+            }.`
+          : null,
+        res.removed_empty_dirs > 0
+          ? `Removed ${res.removed_empty_dirs} empty ${
+              res.removed_empty_dirs === 1 ? "folder" : "folders"
+            }.`
+          : null,
+        formatNavidromeNote(res.navidrome_sync),
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      showToast(
+        "success",
+        `Deleted "${track.title || track.filename}"`,
+        details || res.deleted_path
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not delete track";
+      showToast("error", "Delete failed", msg);
+    } finally {
+      setDeletingTrack(false);
+    }
+  };
+
   if (authStatus === null) {
     return (
       <div className="flex h-full min-h-screen items-center justify-center bg-canvas text-xs text-ink-secondary">
@@ -946,6 +1002,7 @@ export function App() {
           onStartBulkEdit={handleStartBulkEdit}
           onIdentifyAlbum={handleIdentifyAlbum}
           onIdentifyTrack={handleIdentifyTrack}
+          onDeleteTrack={(track) => setDeleteTarget(track)}
           onOrganizeAlbum={handleOrganizeAlbum}
           onChangeAlbumFilter={setAlbumFilter}
           onRescan={handleRescan}
@@ -965,6 +1022,7 @@ export function App() {
           onDeleteArtwork={handleDeleteArtwork}
           onOpenMusicBrainz={handleOpenMusicBrainz}
           onIdentifyTrack={handleIdentifyTrack}
+          onDeleteTrack={(track) => setDeleteTarget(track)}
         />
       </div>
 
@@ -1009,6 +1067,13 @@ export function App() {
         onClose={() => setHistoryOpen(false)}
         onUndo={handleUndoHistory}
         onUndoBatch={handleUndoBatch}
+      />
+
+      <DeleteTrackModal
+        track={deleteTarget}
+        deleting={deletingTrack}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={handleConfirmDeleteTrack}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
