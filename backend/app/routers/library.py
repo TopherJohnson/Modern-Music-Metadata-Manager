@@ -85,6 +85,9 @@ async def get_library(
         tracks,
         query=q,
         organize_settings=db.get_organize_settings(library_id=lib.id),
+        mb_release_cache=db.get_all_mb_release_cache(),
+        album_mb_links=db.get_album_mb_links(library_id=lib.id),
+        missing_ignores=db.get_missing_track_ignores(library_id=lib.id),
     )
 
 
@@ -98,6 +101,9 @@ async def post_library_scan(request: Request) -> LibraryResponse:
     return build_library_response(
         tracks,
         organize_settings=db.get_organize_settings(library_id=lib.id),
+        mb_release_cache=db.get_all_mb_release_cache(),
+        album_mb_links=db.get_album_mb_links(library_id=lib.id),
+        missing_ignores=db.get_missing_track_ignores(library_id=lib.id),
     )
 
 

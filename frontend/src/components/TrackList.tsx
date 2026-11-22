@@ -10,6 +10,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Disc3,
+  Eye,
+  EyeOff,
   Filter,
   FolderInput,
   FolderOpen,
@@ -19,8 +21,12 @@ import {
   ImagePlus,
   Images,
   Layers,
+  ListChecks,
+  Loader2,
   Music,
   RefreshCw,
+  Search,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -34,7 +40,13 @@ import {
   type MissingFieldKey,
   type MissingScopeMode,
 } from "../utils/missingFields";
-import type { AlbumGroup, ArtistGroup, TrackMetadata } from "../types/music";
+import type {
+  AlbumGroup,
+  ArtistGroup,
+  MissingTrackCandidate,
+  MissingTrackItem,
+  TrackMetadata,
+} from "../types/music";
 
 export type AlbumFilterMode = "all" | "mismatches" | "missing" | "structure";
 
@@ -46,6 +58,8 @@ interface TrackListProps {
   albumFilter: AlbumFilterMode;
   missingField: MissingFieldKey | null;
   missingScope: MissingScopeMode;
+  showIgnoredMissing: boolean;
+  checkingCompletenessAlbumId: string | null;
   organizeEnabled: boolean;
   artworkRevision: number;
   loading: boolean;
@@ -56,6 +70,29 @@ interface TrackListProps {
   onStartBulkEdit: (album: AlbumGroup) => void;
   onIdentifyAlbum: (album: AlbumGroup) => void;
   onFindAlbumCover: (album: AlbumGroup) => void;
+  onCheckCompleteness: (
+    album: AlbumGroup,
+    options?: { pickRelease?: boolean; forceRefresh?: boolean }
+  ) => void;
+  onIgnoreMissingTrack: (
+    album: AlbumGroup,
+    options: {
+      discNumber?: number;
+      trackNumber?: number;
+      ignore: boolean;
+      clearAll?: boolean;
+    }
+  ) => void;
+  onBulkIgnoreMissingAlbums: (albums: AlbumGroup[], ignore: boolean) => void;
+  onSearchLibraryForMissing: (
+    album: AlbumGroup,
+    item: MissingTrackItem
+  ) => void;
+  onQuickMoveMissingCandidate: (
+    album: AlbumGroup,
+    item: MissingTrackItem,
+    candidate: MissingTrackCandidate
+  ) => void;
   onIdentifyTrack: (track: TrackMetadata) => void;
   onDeleteTrack: (track: TrackMetadata) => void;
   onMergeAlbums: (albums: AlbumGroup[]) => void;
@@ -68,6 +105,7 @@ interface TrackListProps {
   onChangeAlbumFilter: (filter: AlbumFilterMode) => void;
   onChangeMissingField: (field: MissingFieldKey | null) => void;
   onChangeMissingScope: (scope: MissingScopeMode) => void;
+  onChangeShowIgnoredMissing: (show: boolean) => void;
   onRescan: () => void;
 }
 
@@ -107,6 +145,14 @@ function hasMismatchWarning(album: AlbumGroup): boolean {
   );
 }
 
+function parseLeadingPosition(value: string | null, fallback: number): number {
+  if (!value) return fallback;
+  const m = value.match(/^\s*(\d+)/);
+  if (!m) return fallback;
+  const parsed = Number.parseInt(m[1], 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export function TrackList({
   artists,
   selectedAlbum,
@@ -115,6 +161,8 @@ export function TrackList({
   albumFilter,
   missingField,
   missingScope,
+  showIgnoredMissing,
+  checkingCompletenessAlbumId,
   organizeEnabled,
   artworkRevision,
   loading,
@@ -125,6 +173,11 @@ export function TrackList({
   onStartBulkEdit,
   onIdentifyAlbum,
   onFindAlbumCover,
+  onCheckCompleteness,
+  onIgnoreMissingTrack,
+  onBulkIgnoreMissingAlbums,
+  onSearchLibraryForMissing,
+  onQuickMoveMissingCandidate,
   onIdentifyTrack,
   onDeleteTrack,
   onMergeAlbums,
@@ -134,16 +187,19 @@ export function TrackList({
   onChangeAlbumFilter,
   onChangeMissingField,
   onChangeMissingScope,
+  onChangeShowIgnoredMissing,
   onRescan,
 }: TrackListProps) {
   const [albumSelectMode, setAlbumSelectMode] = useState(false);
   const [checkedAlbumIds, setCheckedAlbumIds] = useState<string[]>([]);
   const [checkedTrackPaths, setCheckedTrackPaths] = useState<string[]>([]);
   const [missingMenuOpen, setMissingMenuOpen] = useState(false);
+  const [showAlbumIgnoredRows, setShowAlbumIgnoredRows] = useState(false);
   const missingMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setCheckedTrackPaths([]);
+    setShowAlbumIgnoredRows(false);
   }, [selectedAlbum?.id]);
 
   useEffect(() => {
@@ -227,7 +283,15 @@ export function TrackList({
     if (albumFilter === "missing" && !album.has_missing_metadata) return false;
     if (albumFilter === "mismatches" && !hasMismatchWarning(album)) return false;
     if (albumFilter === "structure" && !album.needs_reorganize) return false;
-    if (missingField && !albumMatchesMissingField(album, missingField, missingScope)) {
+    if (
+      missingField &&
+      !albumMatchesMissingField(
+        album,
+        missingField,
+        missingScope,
+        showIgnoredMissing
+      )
+    ) {
       return false;
     }
     return true;
@@ -248,15 +312,28 @@ export function TrackList({
       onChangeAlbumFilter(albumFilter === target ? "all" : target);
     };
 
+    const albumMissingOpt = MISSING_FIELD_OPTIONS.find(
+      (o) => o.group === "album"
+    );
     const primaryMissingOpts = MISSING_FIELD_OPTIONS.filter(
       (o) => o.group === "primary"
     );
     const advancedMissingOpts = MISSING_FIELD_OPTIONS.filter(
       (o) => o.group === "advanced"
     );
+    const ignoredIncompleteCount = allAlbums.filter(
+      ({ album }) =>
+        album.missing_tracks_ignored ||
+        (album.missing_track_count === 0 && album.missing_tracks.length > 0)
+    ).length;
     const activeMissingCount = missingField
       ? allAlbums.filter(({ album }) =>
-          albumMatchesMissingField(album, missingField, missingScope)
+          albumMatchesMissingField(
+            album,
+            missingField,
+            missingScope,
+            showIgnoredMissing
+          )
         ).length
       : 0;
 
@@ -345,7 +422,7 @@ export function TrackList({
               </span>
             </button>
 
-            {/* Missing Specific Field Popover (Issue #1) */}
+            {/* Missing… Popover (Issues #5 & #1: Track from Album + Specific Fields) */}
             <div ref={missingMenuRef} className="relative">
               <div className="inline-flex items-center">
                 <button
@@ -359,13 +436,13 @@ export function TrackList({
                       ? "rounded-l-lg border-accent bg-accent-soft text-accent"
                       : "rounded-lg border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
                   }`}
-                  title="Filter albums missing a specific metadata field (e.g., Cover Art, Genre, Year)"
+                  title="Filter incomplete albums missing tracks or albums missing specific metadata fields"
                 >
                   <Filter className="h-3.5 w-3.5" />
                   <span>
                     {activeMissingOption
                       ? `Missing: ${activeMissingOption.label}`
-                      : "Missing Field…"}
+                      : "Missing…"}
                   </span>
                   {activeMissingOption ? (
                     <span className="rounded-full bg-accent px-1.5 py-0.2 font-mono text-[10px] font-semibold text-[#14110c]">
@@ -381,8 +458,8 @@ export function TrackList({
                     type="button"
                     onClick={() => onChangeMissingField(null)}
                     className="inline-flex h-8 items-center rounded-r-lg border border-l-0 border-accent bg-accent-soft px-1.5 text-accent hover:bg-accent hover:text-[#14110c] cursor-pointer"
-                    title="Clear missing field filter"
-                    aria-label="Clear missing field filter"
+                    title="Clear missing filter"
+                    aria-label="Clear missing filter"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -395,6 +472,78 @@ export function TrackList({
                   role="menu"
                   className="absolute right-0 z-50 mt-1.5 w-64 rounded-xl border border-border-strong bg-surface p-2 shadow-2xl"
                 >
+                  {/* Top Check: Track from Album (Issue #5) */}
+                  {albumMissingOpt && (() => {
+                    const count = allAlbums.filter(({ album }) =>
+                      albumMatchesMissingField(
+                        album,
+                        albumMissingOpt.key,
+                        missingScope,
+                        showIgnoredMissing
+                      )
+                    ).length;
+                    const isActive = missingField === albumMissingOpt.key;
+                    return (
+                      <div className="mb-2 border-b border-border-subtle pb-2">
+                        <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                          Album Completeness
+                        </p>
+                        <button
+                          id="filter-missing-tracks-opt"
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onChangeMissingField(
+                              isActive ? null : albumMissingOpt.key
+                            );
+                            setMissingMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-colors cursor-pointer ${
+                            isActive
+                              ? "bg-accent-soft font-medium text-accent"
+                              : "text-ink-primary hover:bg-surface-elevated"
+                          }`}
+                        >
+                          <span className="inline-flex items-center gap-1.5">
+                            <ListChecks className="h-3.5 w-3.5 text-accent" />
+                            {albumMissingOpt.label}
+                          </span>
+                          <span
+                            className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] ${
+                              isActive
+                                ? "bg-accent text-[#14110c] font-semibold"
+                                : count > 0
+                                  ? "bg-surface-elevated text-accent font-medium"
+                                  : "text-ink-muted"
+                            }`}
+                          >
+                            {count}
+                          </span>
+                        </button>
+                        {(ignoredIncompleteCount > 0 || showIgnoredMissing) && (
+                          <label className="mt-1 flex cursor-pointer items-center justify-between rounded-md px-2.5 py-1 text-[11px] text-ink-muted hover:bg-surface-elevated/60 hover:text-ink-secondary">
+                            <span className="inline-flex items-center gap-1.5">
+                              <input
+                                type="checkbox"
+                                checked={showIgnoredMissing}
+                                onChange={(e) =>
+                                  onChangeShowIgnoredMissing(e.target.checked)
+                                }
+                                className="h-3 w-3 accent-amber-500 cursor-pointer"
+                              />
+                              Show ignored ({ignoredIncompleteCount})
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Fields Section (Issue #1) */}
+                  <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                    Fields
+                  </p>
+
                   {/* Scope Toggle: Any track vs Whole album */}
                   <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-border-subtle bg-canvas p-1 text-[10px]">
                     <button
@@ -559,7 +708,7 @@ export function TrackList({
                   ? "border-accent bg-accent-soft text-accent"
                   : "border-border-subtle bg-surface text-ink-secondary hover:border-border-strong hover:text-ink-primary"
               }`}
-              title="Select multiple albums to merge or identify together"
+              title="Select multiple albums to merge, identify together, or bulk-ignore missing tracks"
             >
               <CheckSquare className="h-3.5 w-3.5" />
               <span>
@@ -580,33 +729,55 @@ export function TrackList({
           <div className="flex flex-col items-center justify-center rounded-xl border border-border-subtle bg-surface/60 px-6 py-14 text-center">
             <CheckCircle2 className="h-8 w-8 text-ok" />
             <h3 className="mt-3 text-sm font-semibold text-ink-primary">
-              {activeMissingOption
-                ? `No albums missing ${activeMissingOption.label}`
-                : albumFilter === "missing"
-                  ? "No tracks missing major metadata"
-                  : albumFilter === "structure"
-                    ? "Folder structure is fully organized"
-                    : "All albums look clean"}
+              {missingField === "missing_tracks"
+                ? "No incomplete albums detected"
+                : activeMissingOption
+                  ? `No albums missing ${activeMissingOption.label}`
+                  : albumFilter === "missing"
+                    ? "No tracks missing major metadata"
+                    : albumFilter === "structure"
+                      ? "Folder structure is fully organized"
+                      : "All albums look clean"}
             </h3>
             <p className="mt-1 max-w-xs text-xs text-ink-secondary">
-              {activeMissingOption
-                ? `Every album matching your active filters has ${activeMissingOption.label} populated.`
-                : albumFilter === "missing"
-                  ? "Every track in your library has Title, Artist, and Album tags populated."
-                  : albumFilter === "structure"
-                    ? "All eligible albums match your configured library folder layout."
-                    : "No Navidrome split-album tag mismatches or inconsistent album covers detected."}
+              {missingField === "missing_tracks"
+                ? ignoredIncompleteCount > 0 && !showIgnoredMissing
+                  ? `No active track gaps found (${ignoredIncompleteCount} ignored partial ${
+                      ignoredIncompleteCount === 1 ? "album" : "albums"
+                    } hidden).`
+                  : "No track sequence gaps, short totals, or missing MusicBrainz tracks were detected."
+                : activeMissingOption
+                  ? `Every album matching your active filters has ${activeMissingOption.label} populated.`
+                  : albumFilter === "missing"
+                    ? "Every track in your library has Title, Artist, and Album tags populated."
+                    : albumFilter === "structure"
+                      ? "All eligible albums match your configured library folder layout."
+                      : "No Navidrome split-album tag mismatches or inconsistent album covers detected."}
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                onChangeAlbumFilter("all");
-                onChangeMissingField(null);
-              }}
-              className="m4-btn-secondary mt-4"
-            >
-              Show All Albums ({allAlbums.length})
-            </button>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              {missingField === "missing_tracks" &&
+                ignoredIncompleteCount > 0 &&
+                !showIgnoredMissing && (
+                  <button
+                    type="button"
+                    onClick={() => onChangeShowIgnoredMissing(true)}
+                    className="m4-btn-secondary"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    Show Ignored ({ignoredIncompleteCount})
+                  </button>
+                )}
+              <button
+                type="button"
+                onClick={() => {
+                  onChangeAlbumFilter("all");
+                  onChangeMissingField(null);
+                }}
+                className="m4-btn-secondary"
+              >
+                Show All Albums ({allAlbums.length})
+              </button>
+            </div>
           </div>
         ) : (
           <div
@@ -622,9 +793,10 @@ export function TrackList({
               const isChecked = checkedAlbumIds.includes(album.id);
               const showCheckbox =
                 albumSelectMode || checkedAlbumIds.length > 0;
-              const fieldMissingCount = missingField
-                ? countTracksMissingField(album, missingField)
-                : 0;
+              const fieldMissingCount =
+                missingField && missingField !== "missing_tracks"
+                  ? countTracksMissingField(album, missingField)
+                  : 0;
 
               const toggleAlbumChecked = () => {
                 setCheckedAlbumIds((prev) =>
@@ -682,7 +854,7 @@ export function TrackList({
                       aria-label={
                         isChecked
                           ? `Deselect ${album.title}`
-                          : `Select ${album.title} for merging`
+                          : `Select ${album.title}`
                       }
                       aria-pressed={isChecked}
                       className={`absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border transition-opacity cursor-pointer ${
@@ -698,16 +870,39 @@ export function TrackList({
 
                     {/* Top-right status badges */}
                     <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
-                      {activeMissingOption && fieldMissingCount > 0 && (
-                        <div
-                          className="flex items-center gap-1 rounded-md border border-accent/60 bg-canvas/92 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent shadow-sm backdrop-blur-xs"
-                          title={`${fieldMissingCount} of ${album.track_count} tracks missing ${activeMissingOption.label}`}
-                        >
-                          {fieldMissingCount === album.track_count
-                            ? activeMissingOption.shortBadge
-                            : `${fieldMissingCount}/${album.track_count} ${activeMissingOption.shortBadge}`}
-                        </div>
-                      )}
+                      {missingField === "missing_tracks" &&
+                        album.missing_track_count > 0 && (
+                          <div
+                            className="flex items-center gap-1 rounded-md border border-accent/60 bg-canvas/92 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent shadow-sm backdrop-blur-xs"
+                            title={`${album.missing_track_count} missing ${
+                              album.missing_track_count === 1 ? "track" : "tracks"
+                            } detected`}
+                          >
+                            {album.missing_track_count} Missing
+                          </div>
+                        )}
+                      {missingField === "missing_tracks" &&
+                        album.missing_tracks_ignored && (
+                          <div
+                            className="flex items-center gap-1 rounded-md border border-border-strong bg-canvas/90 px-1.5 py-0.5 font-mono text-[10px] text-ink-muted shadow-sm backdrop-blur-xs"
+                            title="Missing-track checks ignored for this partial album"
+                          >
+                            <EyeOff className="h-2.5 w-2.5" />
+                            Ignored
+                          </div>
+                        )}
+                      {activeMissingOption &&
+                        missingField !== "missing_tracks" &&
+                        fieldMissingCount > 0 && (
+                          <div
+                            className="flex items-center gap-1 rounded-md border border-accent/60 bg-canvas/92 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent shadow-sm backdrop-blur-xs"
+                            title={`${fieldMissingCount} of ${album.track_count} tracks missing ${activeMissingOption.label}`}
+                          >
+                            {fieldMissingCount === album.track_count
+                              ? activeMissingOption.shortBadge
+                              : `${fieldMissingCount}/${album.track_count} ${activeMissingOption.shortBadge}`}
+                          </div>
+                        )}
                       {album.has_missing_metadata && (
                         <div
                           className="flex items-center gap-1 rounded-md border border-danger/60 bg-danger/90 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm"
@@ -752,10 +947,15 @@ export function TrackList({
                       {album.artist}
                     </p>
                     <div className="mt-2 flex items-center justify-between gap-1 text-[10px] font-mono text-ink-muted">
-                      <span>
+                      <span className="truncate">
                         {album.year ? album.year.slice(0, 4) : "—"} · {album.track_count}t
+                        {album.missing_track_count > 0 && (
+                          <span className="ml-1 text-accent">
+                            · -{album.missing_track_count}
+                          </span>
+                        )}
                       </span>
-                      <span className="rounded border border-border-subtle bg-canvas px-1.5 py-0.5 text-[10px] uppercase text-ink-secondary">
+                      <span className="shrink-0 rounded border border-border-subtle bg-canvas px-1.5 py-0.5 text-[10px] uppercase text-ink-secondary">
                         {album.formats.join("/")}
                       </span>
                     </div>
@@ -775,6 +975,12 @@ export function TrackList({
             (sum, a) => sum + a.track_count,
             0
           );
+          const hasUnignored = selectedAlbums.some(
+            (a) => !a.missing_tracks_ignored
+          );
+          const hasIgnored = selectedAlbums.some(
+            (a) => a.missing_tracks_ignored || a.missing_tracks.some((m) => m.ignored)
+          );
           return (
             <div
               id="multi-album-action-bar"
@@ -789,7 +995,7 @@ export function TrackList({
                 </span>
               </span>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   id="floating-merge-albums-btn"
                   type="button"
@@ -824,6 +1030,40 @@ export function TrackList({
                   <Globe className="h-3.5 w-3.5 text-accent" />
                   Identify Combined
                 </button>
+
+                {hasUnignored && (
+                  <button
+                    id="floating-ignore-missing-btn"
+                    type="button"
+                    onClick={() => {
+                      onBulkIgnoreMissingAlbums(selectedAlbums, true);
+                      setAlbumSelectMode(false);
+                      setCheckedAlbumIds([]);
+                    }}
+                    className="m4-btn-secondary h-8 px-3 text-xs"
+                    title="Mark selected albums as intentional partial albums (suppresses missing-track alerts)"
+                  >
+                    <EyeOff className="h-3.5 w-3.5 text-ink-secondary" />
+                    Ignore Missing
+                  </button>
+                )}
+
+                {hasIgnored && (
+                  <button
+                    id="floating-reenable-missing-btn"
+                    type="button"
+                    onClick={() => {
+                      onBulkIgnoreMissingAlbums(selectedAlbums, false);
+                      setAlbumSelectMode(false);
+                      setCheckedAlbumIds([]);
+                    }}
+                    className="m4-btn-secondary h-8 px-3 text-xs"
+                    title="Re-enable missing-track checks for selected albums"
+                  >
+                    <Eye className="h-3.5 w-3.5 text-accent" />
+                    Re-enable Checks
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -1012,6 +1252,25 @@ export function TrackList({
               </button>
             )}
             <button
+              id="header-check-completeness-btn"
+              type="button"
+              disabled={checkingCompletenessAlbumId === selectedAlbum.id}
+              onClick={() => onCheckCompleteness(selectedAlbum)}
+              className="m4-btn-secondary"
+              title={
+                selectedAlbum.completeness_mbid
+                  ? "Verify this album against its MusicBrainz release tracklist"
+                  : "Pick a MusicBrainz release to verify missing tracks and titles"
+              }
+            >
+              {checkingCompletenessAlbumId === selectedAlbum.id ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+              ) : (
+                <ListChecks className="h-3.5 w-3.5 text-accent" />
+              )}
+              Check Completeness
+            </button>
+            <button
               id="header-identify-album-btn"
               type="button"
               onClick={() => onIdentifyAlbum(selectedAlbum)}
@@ -1072,6 +1331,234 @@ export function TrackList({
             </div>
           </div>
         )}
+
+        {/* Album Completeness / Missing Tracks Banner (Issue #5) */}
+        {(() => {
+          const ignoredGhostCount = selectedAlbum.missing_tracks.filter(
+            (m) => m.ignored
+          ).length;
+          const isChecking = checkingCompletenessAlbumId === selectedAlbum.id;
+
+          if (selectedAlbum.missing_tracks_ignored) {
+            return (
+              <div
+                id="completeness-ignored-banner"
+                className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border-subtle bg-canvas/55 px-4 py-2.5 text-xs"
+              >
+                <div className="flex items-center gap-2 text-ink-muted">
+                  <EyeOff className="h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Missing-track checks ignored for this partial album
+                    {ignoredGhostCount > 0
+                      ? ` (${ignoredGhostCount} hidden ${
+                          ignoredGhostCount === 1 ? "slot" : "slots"
+                        })`
+                      : ""}
+                    .
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {ignoredGhostCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAlbumIgnoredRows((v) => !v)}
+                      className="m4-btn-secondary h-7 px-2.5 text-[11px]"
+                    >
+                      {showAlbumIgnoredRows ? (
+                        <EyeOff className="h-3 w-3" />
+                      ) : (
+                        <Eye className="h-3 w-3" />
+                      )}
+                      {showAlbumIgnoredRows ? "Hide ignored" : "Show ignored"}
+                    </button>
+                  )}
+                  <button
+                    id="reenable-album-completeness-btn"
+                    type="button"
+                    onClick={() =>
+                      onIgnoreMissingTrack(selectedAlbum, {
+                        discNumber: 0,
+                        trackNumber: 0,
+                        ignore: false,
+                        clearAll: true,
+                      })
+                    }
+                    className="m4-btn-secondary h-7 px-2.5 text-[11px]"
+                  >
+                    Re-enable
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          if (selectedAlbum.missing_track_count > 0) {
+            return (
+              <div
+                id="completeness-missing-banner"
+                className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent/40 bg-accent-soft/35 px-4 py-2.5"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <ListChecks className="h-4 w-4 shrink-0 text-accent" />
+                  <p className="text-xs text-ink-secondary">
+                    <span className="font-semibold text-ink-primary">
+                      {selectedAlbum.missing_track_count} missing{" "}
+                      {selectedAlbum.missing_track_count === 1 ? "track" : "tracks"}
+                    </span>{" "}
+                    {selectedAlbum.completeness_source === "musicbrainz" ? (
+                      <>
+                        compared to MusicBrainz release{" "}
+                        <span className="font-medium text-ink-primary">
+                          “{selectedAlbum.completeness_mb_title || selectedAlbum.title}”
+                        </span>
+                      </>
+                    ) : (
+                      <>detected from track numbering</>
+                    )}
+                    {ignoredGhostCount > 0 && (
+                      <span className="ml-1.5 text-ink-muted">
+                        ({ignoredGhostCount} ignored)
+                      </span>
+                    )}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {selectedAlbum.completeness_source !== "musicbrainz" ? (
+                    <button
+                      type="button"
+                      disabled={isChecking}
+                      onClick={() => onCheckCompleteness(selectedAlbum)}
+                      className="m4-btn-primary h-7 px-2.5 text-[11px]"
+                      title="Fetch official MusicBrainz tracklist to see exact missing titles and durations"
+                    >
+                      {isChecking ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Globe className="h-3 w-3" />
+                      )}
+                      Check via MusicBrainz
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isChecking}
+                      onClick={() =>
+                        onCheckCompleteness(selectedAlbum, { pickRelease: true })
+                      }
+                      className="m4-btn-secondary h-7 px-2.5 text-[11px]"
+                      title="Verify against a different MusicBrainz edition/release"
+                    >
+                      Change Release
+                    </button>
+                  )}
+
+                  {ignoredGhostCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAlbumIgnoredRows((v) => !v)}
+                      className="m4-btn-secondary h-7 px-2 text-[11px]"
+                    >
+                      {showAlbumIgnoredRows
+                        ? "Hide ignored"
+                        : `Show ignored (${ignoredGhostCount})`}
+                    </button>
+                  )}
+
+                  <button
+                    id="ignore-album-missing-btn"
+                    type="button"
+                    onClick={() =>
+                      onIgnoreMissingTrack(selectedAlbum, {
+                        discNumber: 0,
+                        trackNumber: 0,
+                        ignore: true,
+                      })
+                    }
+                    className="m4-btn-secondary h-7 px-2.5 text-[11px]"
+                    title="Mark as an intentional partial album to silence missing-track alerts"
+                  >
+                    <EyeOff className="h-3 w-3" />
+                    Ignore album
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          if (
+            selectedAlbum.completeness_source === "musicbrainz" ||
+            ignoredGhostCount > 0
+          ) {
+            return (
+              <div
+                id="completeness-verified-banner"
+                className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border-subtle bg-canvas/50 px-4 py-2 text-xs"
+              >
+                <div className="flex items-center gap-2 text-ink-secondary">
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-ok" />
+                  <span>
+                    {selectedAlbum.completeness_source === "musicbrainz" ? (
+                      <>
+                        Verified complete against MusicBrainz release{" "}
+                        <span className="font-medium text-ink-primary">
+                          “{selectedAlbum.completeness_mb_title || selectedAlbum.title}”
+                        </span>
+                      </>
+                    ) : (
+                      <>All detected missing tracks are ignored</>
+                    )}
+                    {ignoredGhostCount > 0 && (
+                      <span className="ml-1.5 text-ink-muted">
+                        ({ignoredGhostCount} ignored)
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {ignoredGhostCount > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowAlbumIgnoredRows((v) => !v)}
+                        className="m4-btn-secondary h-7 px-2 text-[11px]"
+                      >
+                        {showAlbumIgnoredRows ? "Hide ignored" : "Show ignored"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onIgnoreMissingTrack(selectedAlbum, {
+                            discNumber: 0,
+                            trackNumber: 0,
+                            ignore: false,
+                            clearAll: true,
+                          })
+                        }
+                        className="m4-btn-secondary h-7 px-2 text-[11px]"
+                      >
+                        Re-enable all
+                      </button>
+                    </>
+                  )}
+                  {selectedAlbum.completeness_source === "musicbrainz" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onCheckCompleteness(selectedAlbum, { pickRelease: true })
+                      }
+                      className="m4-btn-secondary h-7 px-2 text-[11px]"
+                    >
+                      Change Release
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          return null;
+        })()}
 
         {/* Amber Diagnostic Banner: Navidrome Split-Album Risk & Artwork Mismatches */}
         {(splitWarnings.length > 0 || artworkWarnings.length > 0) && (
@@ -1248,174 +1735,367 @@ export function TrackList({
               <th className="hidden md:table-cell py-2 px-2">Artist</th>
               <th className="hidden sm:table-cell w-24 py-2 px-2 text-right">Format</th>
               <th className="w-16 py-2 px-2 text-right">Time</th>
-              <th className="w-16 py-2 pl-1 pr-2 text-right" aria-label="Track actions" />
+              <th className="w-20 py-2 pl-1 pr-2 text-right" aria-label="Track actions" />
             </tr>
           </thead>
           <tbody className="divide-y divide-border-subtle/50 text-xs">
-            {selectedAlbum.tracks.map((track) => {
-              const isSelected =
-                !isBulkEditingAlbum && selectedTrackPath === track.path;
-              const isChecked = checkedTrackPaths.includes(track.path);
-              const isMissingMajor = track.missing_fields.length > 0;
-              const discPrefix =
-                track.disc_number && track.disc_number !== "1" && track.disc_number !== "1/1"
-                  ? `${track.disc_number.split("/")[0]}-`
-                  : "";
-              const trackNumLabel = track.track_number
-                ? `${discPrefix}${track.track_number.split("/")[0]}`
-                : "—";
+            {(() => {
+              const visibleMissing = selectedAlbum.missing_tracks.filter(
+                (item) => !item.ignored || showAlbumIgnoredRows
+              );
+              const hasMultiDisc =
+                selectedAlbum.tracks.some(
+                  (t) => parseLeadingPosition(t.disc_number, 1) > 1
+                ) || visibleMissing.some((m) => m.disc_number > 1);
 
-              return (
-                <tr
-                  key={track.path}
-                  onClick={() => onSelectTrack(track)}
-                  className={`group cursor-pointer transition-colors ${
-                    isSelected
-                      ? "bg-accent-soft/80 text-ink-primary"
-                      : isChecked
-                        ? "bg-accent-soft/40 text-ink-primary"
-                        : "hover:bg-surface-elevated/70 text-ink-secondary"
-                  }`}
-                >
-                  <td
-                    className="py-2.5 pl-2 pr-1"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isChecked}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setCheckedTrackPaths((prev) => [...prev, track.path]);
-                        } else {
-                          setCheckedTrackPaths((prev) =>
-                            prev.filter((p) => p !== track.path)
-                          );
-                        }
-                      }}
-                      aria-label={`Select ${track.title || track.filename}`}
-                      className="h-3.5 w-3.5 accent-amber-500 cursor-pointer"
-                    />
-                  </td>
-                  <td className="py-2.5 px-2 font-mono text-[11px] text-ink-muted">
-                    {trackNumLabel}
-                  </td>
-                  <td className="py-2.5 px-2">
-                    <div className="flex items-center justify-between gap-2 min-w-0">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {isMissingMajor ? (
-                          <AlertOctagon
-                            className="h-3.5 w-3.5 shrink-0 text-danger"
-                            aria-label="Missing major metadata"
-                          />
-                        ) : (
-                          <Music
-                            className={`h-3.5 w-3.5 shrink-0 ${
-                              isSelected ? "text-accent" : "text-ink-muted/60"
-                            }`}
-                          />
-                        )}
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <p
-                              className={`truncate font-medium ${
-                                isSelected ? "text-accent" : "text-ink-primary"
-                              }`}
-                            >
-                              {track.title || track.filename}
-                            </p>
-                            {activeMissingOption &&
-                              missingField &&
-                              isTrackMissingField(track, missingField) && (
+              type TableRow =
+                | { kind: "track"; disc: number; num: number; idx: number; track: TrackMetadata }
+                | { kind: "missing"; disc: number; num: number; idx: number; item: MissingTrackItem };
+
+              const rows: TableRow[] = [
+                ...selectedAlbum.tracks.map((track, idx) => ({
+                  kind: "track" as const,
+                  disc: parseLeadingPosition(track.disc_number, 1),
+                  num: parseLeadingPosition(track.track_number, 99999 + idx),
+                  idx,
+                  track,
+                })),
+                ...visibleMissing.map((item, idx) => ({
+                  kind: "missing" as const,
+                  disc: item.disc_number || 1,
+                  num: item.track_number === 0 ? 0 : item.track_number,
+                  idx,
+                  item,
+                })),
+              ];
+
+              rows.sort((a, b) => {
+                if (a.disc !== b.disc) return a.disc - b.disc;
+                if (a.num !== b.num) return a.num - b.num;
+                if (a.kind !== b.kind) return a.kind === "track" ? -1 : 1;
+                return a.idx - b.idx;
+              });
+
+              return rows.map((row) => {
+                if (row.kind === "missing") {
+                  const { item } = row;
+                  const topCandidate = item.candidates[0] ?? null;
+                  const topIsStray =
+                    topCandidate !== null &&
+                    (topCandidate.album_track_count <= 2 ||
+                      topCandidate.album === "Unknown Album");
+                  const slotLabel =
+                    item.track_number === 0
+                      ? `D${item.disc_number}`
+                      : hasMultiDisc
+                        ? `${item.disc_number}-${item.track_number}`
+                        : String(item.track_number);
+
+                  return (
+                    <tr
+                      key={`missing-${item.disc_number}-${item.track_number}`}
+                      className={`border-y border-dashed border-border-strong/65 bg-surface/35 text-ink-muted transition-colors hover:bg-surface/65 ${
+                        item.ignored ? "opacity-55" : "opacity-90"
+                      }`}
+                    >
+                      <td className="py-2.5 pl-2 pr-1">
+                        <span
+                          className="inline-block h-3.5 w-3.5 rounded border border-dashed border-border-strong/70"
+                          aria-hidden="true"
+                        />
+                      </td>
+                      <td className="py-2.5 px-2 font-mono text-[11px] text-ink-muted">
+                        {slotLabel}
+                      </td>
+                      <td className="py-2.5 px-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="truncate font-medium italic text-ink-secondary">
+                                {item.track_number === 0
+                                  ? `Disc ${item.disc_number} — Entire Disc Missing`
+                                  : item.title
+                                    ? `“${item.title}”`
+                                    : "Missing Track"}
+                              </span>
+                              <span
+                                className={`shrink-0 rounded border px-1.5 py-0.2 font-mono text-[9px] font-semibold uppercase ${
+                                  item.ignored
+                                    ? "border-border-strong bg-canvas text-ink-muted"
+                                    : "border-accent/45 bg-accent-soft/80 text-accent"
+                                }`}
+                              >
+                                {item.ignored ? "Ignored" : "Missing"}
+                              </span>
+                            </div>
+
+                            {topCandidate && !item.ignored && (
+                              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                                 <span
-                                  className="shrink-0 rounded border border-accent/50 bg-accent-soft px-1.5 py-0.2 font-mono text-[9px] font-semibold text-accent"
-                                  title={`This track is missing ${activeMissingOption.label}`}
+                                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${
+                                    topIsStray
+                                      ? "border-accent/40 bg-accent/10 text-accent"
+                                      : "border-border-subtle bg-canvas text-ink-secondary"
+                                  }`}
                                 >
-                                  {activeMissingOption.shortBadge}
+                                  {topIsStray && (
+                                    <Sparkles className="h-2.5 w-2.5" />
+                                  )}
+                                  Found in “{topCandidate.album || "Unknown Album"}” (
+                                  {topCandidate.album_track_count}{" "}
+                                  {topCandidate.album_track_count === 1
+                                    ? "track"
+                                    : "tracks"}
+                                  )
                                 </span>
-                              )}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onQuickMoveMissingCandidate(
+                                      selectedAlbum,
+                                      item,
+                                      topCandidate
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-md border border-accent/50 bg-accent-soft px-2 py-0.5 text-[10px] font-medium text-accent hover:bg-accent hover:text-[#14110c] cursor-pointer transition-colors"
+                                  title={`Move "${topCandidate.title || topCandidate.filename}" into "${selectedAlbum.title}"`}
+                                >
+                                  <FolderInput className="h-2.5 w-2.5" />
+                                  Move here
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          {isMissingMajor && (
-                            <p className="truncate font-mono text-[10px] text-danger">
-                              Missing: {track.missing_fields.join(", ")}
-                            </p>
+                        </div>
+                      </td>
+                      <td className="hidden md:table-cell py-2.5 px-2 truncate max-w-[180px] text-ink-muted italic">
+                        {item.artist || "—"}
+                      </td>
+                      <td className="hidden sm:table-cell py-2.5 px-2 text-right">
+                        <span className="inline-block rounded border border-dashed border-border-strong/70 bg-canvas/50 px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
+                          {item.source === "musicbrainz" ? "MB" : "GAP"}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-mono text-[11px] text-ink-muted">
+                        {item.length_ms
+                          ? formatDuration(item.length_ms / 1000)
+                          : "—"}
+                      </td>
+                      <td className="py-2.5 pl-1 pr-2 text-right">
+                        <div className="inline-flex items-center justify-end gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onSearchLibraryForMissing(selectedAlbum, item)
+                            }
+                            className="rounded-md p-1 text-ink-secondary transition-colors hover:bg-surface-elevated hover:text-accent cursor-pointer"
+                            title="Search your local library for this missing track"
+                            aria-label="Search library for missing track"
+                          >
+                            <Search className="h-3.5 w-3.5" />
+                          </button>
+                          {!selectedAlbum.missing_tracks_ignored && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onIgnoreMissingTrack(selectedAlbum, {
+                                  discNumber: item.disc_number,
+                                  trackNumber: item.track_number,
+                                  ignore: !item.ignored,
+                                })
+                              }
+                              className="rounded-md p-1 text-ink-muted transition-colors hover:bg-surface-elevated hover:text-ink-primary cursor-pointer"
+                              title={
+                                item.ignored
+                                  ? "Restore missing-track alert for this slot"
+                                  : "Ignore this missing track"
+                              }
+                              aria-label={
+                                item.ignored
+                                  ? "Restore missing track"
+                                  : "Ignore missing track"
+                              }
+                            >
+                              {item.ignored ? (
+                                <Eye className="h-3.5 w-3.5 text-accent" />
+                              ) : (
+                                <EyeOff className="h-3.5 w-3.5" />
+                              )}
+                            </button>
                           )}
                         </div>
-                      </div>
+                      </td>
+                    </tr>
+                  );
+                }
 
-                      {isMissingMajor && (
+                const { track } = row;
+                const isSelected =
+                  !isBulkEditingAlbum && selectedTrackPath === track.path;
+                const isChecked = checkedTrackPaths.includes(track.path);
+                const isMissingMajor = track.missing_fields.length > 0;
+                const discPrefix =
+                  track.disc_number &&
+                  track.disc_number !== "1" &&
+                  track.disc_number !== "1/1"
+                    ? `${track.disc_number.split("/")[0]}-`
+                    : "";
+                const trackNumLabel = track.track_number
+                  ? `${discPrefix}${track.track_number.split("/")[0]}`
+                  : "—";
+
+                return (
+                  <tr
+                    key={track.path}
+                    onClick={() => onSelectTrack(track)}
+                    className={`group cursor-pointer transition-colors ${
+                      isSelected
+                        ? "bg-accent-soft/80 text-ink-primary"
+                        : isChecked
+                          ? "bg-accent-soft/40 text-ink-primary"
+                          : "hover:bg-surface-elevated/70 text-ink-secondary"
+                    }`}
+                  >
+                    <td
+                      className="py-2.5 pl-2 pr-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setCheckedTrackPaths((prev) => [...prev, track.path]);
+                          } else {
+                            setCheckedTrackPaths((prev) =>
+                              prev.filter((p) => p !== track.path)
+                            );
+                          }
+                        }}
+                        aria-label={`Select ${track.title || track.filename}`}
+                        className="h-3.5 w-3.5 accent-amber-500 cursor-pointer"
+                      />
+                    </td>
+                    <td className="py-2.5 px-2 font-mono text-[11px] text-ink-muted">
+                      {trackNumLabel}
+                    </td>
+                    <td className="py-2.5 px-2">
+                      <div className="flex items-center justify-between gap-2 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isMissingMajor ? (
+                            <AlertOctagon
+                              className="h-3.5 w-3.5 shrink-0 text-danger"
+                              aria-label="Missing major metadata"
+                            />
+                          ) : (
+                            <Music
+                              className={`h-3.5 w-3.5 shrink-0 ${
+                                isSelected ? "text-accent" : "text-ink-muted/60"
+                              }`}
+                            />
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <p
+                                className={`truncate font-medium ${
+                                  isSelected ? "text-accent" : "text-ink-primary"
+                                }`}
+                              >
+                                {track.title || track.filename}
+                              </p>
+                              {activeMissingOption &&
+                                missingField &&
+                                isTrackMissingField(track, missingField) && (
+                                  <span
+                                    className="shrink-0 rounded border border-accent/50 bg-accent-soft px-1.5 py-0.2 font-mono text-[9px] font-semibold text-accent"
+                                    title={`This track is missing ${activeMissingOption.label}`}
+                                  >
+                                    {activeMissingOption.shortBadge}
+                                  </span>
+                                )}
+                            </div>
+                            {isMissingMajor && (
+                              <p className="truncate font-mono text-[10px] text-danger">
+                                Missing: {track.missing_fields.join(", ")}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {isMissingMajor && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onIdentifyTrack(track);
+                            }}
+                            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border-strong bg-surface-elevated px-2 py-1 text-[10px] font-medium text-accent hover:border-accent/60 hover:bg-surface-hover cursor-pointer"
+                            title="Identify this track via MusicBrainz"
+                          >
+                            <Globe className="h-3 w-3" />
+                            Identify
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td className="hidden md:table-cell py-2.5 px-2 truncate max-w-[180px] text-ink-secondary">
+                      {track.artist || "—"}
+                    </td>
+                    <td className="hidden sm:table-cell py-2.5 px-2 text-right">
+                      <span
+                        className="inline-block rounded border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-secondary"
+                        title={
+                          track.bitrate
+                            ? `${track.format} · ${Math.round(track.bitrate / 1000)} kbps`
+                            : track.format
+                        }
+                      >
+                        {track.format}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-2 text-right font-mono text-[11px] text-ink-muted">
+                      {formatDuration(track.duration)}
+                    </td>
+                    <td className="py-2.5 pl-1 pr-2 text-right">
+                      <div className="inline-flex items-center justify-end gap-0.5">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            onIdentifyTrack(track);
+                            onMoveTracksToAlbum([track], selectedAlbum.id);
                           }}
-                          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border-strong bg-surface-elevated px-2 py-1 text-[10px] font-medium text-accent hover:border-accent/60 hover:bg-surface-hover cursor-pointer"
-                          title="Identify this track via MusicBrainz"
+                          className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-surface-elevated hover:text-accent cursor-pointer ${
+                            isSelected
+                              ? "opacity-80 hover:opacity-100"
+                              : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                          }`}
+                          title={`Move ${track.filename} to another album`}
+                          aria-label={`Move ${track.title || track.filename} to another album`}
                         >
-                          <Globe className="h-3 w-3" />
-                          Identify
+                          <FolderInput className="h-3.5 w-3.5" />
                         </button>
-                      )}
-                    </div>
-                  </td>
-                  <td className="hidden md:table-cell py-2.5 px-2 truncate max-w-[180px] text-ink-secondary">
-                    {track.artist || "—"}
-                  </td>
-                  <td className="hidden sm:table-cell py-2.5 px-2 text-right">
-                    <span
-                      className="inline-block rounded border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-secondary"
-                      title={
-                        track.bitrate
-                          ? `${track.format} · ${Math.round(track.bitrate / 1000)} kbps`
-                          : track.format
-                      }
-                    >
-                      {track.format}
-                    </span>
-                  </td>
-                  <td className="py-2.5 px-2 text-right font-mono text-[11px] text-ink-muted">
-                    {formatDuration(track.duration)}
-                  </td>
-                  <td className="py-2.5 pl-1 pr-2 text-right">
-                    <div className="inline-flex items-center justify-end gap-0.5">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onMoveTracksToAlbum([track], selectedAlbum.id);
-                        }}
-                        className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-surface-elevated hover:text-accent cursor-pointer ${
-                          isSelected
-                            ? "opacity-80 hover:opacity-100"
-                            : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                        }`}
-                        title={`Move ${track.filename} to another album`}
-                        aria-label={`Move ${track.title || track.filename} to another album`}
-                      >
-                        <FolderInput className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteTrack(track);
-                        }}
-                        className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-danger/15 hover:text-danger cursor-pointer ${
-                          isSelected
-                            ? "opacity-80 hover:opacity-100"
-                            : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                        }`}
-                        title={`Delete ${track.filename} from disk`}
-                        aria-label={`Delete ${track.title || track.filename}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteTrack(track);
+                          }}
+                          className={`rounded-md p-1 text-ink-muted transition-opacity hover:bg-danger/15 hover:text-danger cursor-pointer ${
+                            isSelected
+                              ? "opacity-80 hover:opacity-100"
+                              : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+                          }`}
+                          title={`Delete ${track.filename} from disk`}
+                          aria-label={`Delete ${track.title || track.filename}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              });
+            })()}
           </tbody>
         </table>
       </div>

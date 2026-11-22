@@ -4,6 +4,8 @@ import {
   applyMusicBrainzRelease,
   applyMusicBrainzTrack,
   applyOrganize,
+  bulkSetMissingTrackIgnore,
+  checkAlbumCompleteness,
   copyArtwork,
   deleteArtwork,
   deleteTrack,
@@ -17,6 +19,7 @@ import {
   mergeAlbums,
   saveOrganizeSettings,
   setActiveLibraryId as setApiLibraryId,
+  setMissingTrackIgnore,
   setUnauthorizedHandler,
   triggerLibraryScan,
   triggerNavidromeScan,
@@ -26,12 +29,14 @@ import {
   updateTracksBulk,
   uploadArtwork,
 } from "./api/client";
+import { CompletenessCheckModal } from "./components/CompletenessCheckModal";
 import { DeleteTrackModal } from "./components/DeleteTrackModal";
 import { Header } from "./components/Header";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LoginScreen } from "./components/LoginScreen";
 import { MergeAlbumsModal } from "./components/MergeAlbumsModal";
 import { MetadataEditor } from "./components/MetadataEditor";
+import { MissingTrackSearchModal } from "./components/MissingTrackSearchModal";
 import { MoveTracksToAlbumModal } from "./components/MoveTracksToAlbumModal";
 import {
   MusicBrainzModal,
@@ -51,6 +56,8 @@ import type {
   HealthResponse,
   LibraryInfo,
   LibraryResponse,
+  MissingTrackCandidate,
+  MissingTrackItem,
   MusicBrainzApplyPayload,
   MusicBrainzApplyTrackPayload,
   NavidromeSyncResult,
@@ -111,6 +118,7 @@ export function App() {
   const [albumFilter, setAlbumFilter] = useState<AlbumFilterMode>("all");
   const [missingField, setMissingField] = useState<MissingFieldKey | null>(null);
   const [missingScope, setMissingScope] = useState<MissingScopeMode>("any");
+  const [showIgnoredMissing, setShowIgnoredMissing] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -161,6 +169,16 @@ export function App() {
     sourceAlbumId: string | null;
   }>({ tracks: [], sourceAlbumId: null });
   const [mergingAlbums, setMergingAlbums] = useState(false);
+  const [checkingCompletenessAlbumId, setCheckingCompletenessAlbumId] =
+    useState<string | null>(null);
+  const [completenessModalAlbum, setCompletenessModalAlbum] =
+    useState<AlbumGroup | null>(null);
+  const [checkingModalMbid, setCheckingModalMbid] = useState<string | null>(null);
+  const [missingSearchTarget, setMissingSearchTarget] = useState<{
+    album: AlbumGroup;
+    item: MissingTrackItem;
+  } | null>(null);
+  const [movingMissingPath, setMovingMissingPath] = useState<string | null>(null);
 
   const toastTimerRef = useRef<number | null>(null);
 
@@ -292,6 +310,9 @@ export function App() {
     setIsBulkMode(false);
     setAlbumFilter("all");
     setMissingField(null);
+    setShowIgnoredMissing(false);
+    setCompletenessModalAlbum(null);
+    setMissingSearchTarget(null);
     setHistoryOpen(false);
     setTrackMbTarget(null);
     setMbModal((prev) => ({ ...prev, open: false }));
@@ -1091,6 +1112,222 @@ export function App() {
     }
   };
 
+  const handleCheckCompleteness = async (
+    album: AlbumGroup,
+    options?: { pickRelease?: boolean; forceRefresh?: boolean }
+  ) => {
+    if (options?.pickRelease || !album.completeness_mbid) {
+      setCompletenessModalAlbum(album);
+      return;
+    }
+    setCheckingCompletenessAlbumId(album.id);
+    try {
+      const res = await checkAlbumCompleteness(album.id, {
+        mbid: album.completeness_mbid,
+        forceRefresh: options?.forceRefresh ?? false,
+      });
+      await fetchLibrary(debouncedQuery, { silent: true });
+      showToast(
+        "success",
+        res.missing_track_count === 0
+          ? `"${album.title}" is complete`
+          : `Found ${res.missing_track_count} missing ${
+              res.missing_track_count === 1 ? "track" : "tracks"
+            } on "${album.title}"`,
+        `Compared against MusicBrainz "${res.release_title}" (${res.release_track_count} tracks${
+          res.cached ? ", cached" : ""
+        }).`
+      );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not check completeness";
+      showToast("error", "Completeness check failed", msg);
+    } finally {
+      setCheckingCompletenessAlbumId(null);
+    }
+  };
+
+  const handleSelectCompletenessRelease = async (
+    album: AlbumGroup,
+    mbid: string
+  ) => {
+    setCheckingModalMbid(mbid);
+    setCheckingCompletenessAlbumId(album.id);
+    try {
+      const res = await checkAlbumCompleteness(album.id, { mbid });
+      setCompletenessModalAlbum(null);
+      await fetchLibrary(debouncedQuery, { silent: true });
+      showToast(
+        "success",
+        res.missing_track_count === 0
+          ? `"${album.title}" is complete`
+          : `Found ${res.missing_track_count} missing ${
+              res.missing_track_count === 1 ? "track" : "tracks"
+            } on "${album.title}"`,
+        `Matched against MusicBrainz "${res.release_title}" (${res.release_track_count} tracks).`
+      );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not check completeness";
+      showToast("error", "Completeness check failed", msg);
+    } finally {
+      setCheckingModalMbid(null);
+      setCheckingCompletenessAlbumId(null);
+    }
+  };
+
+  const handleIgnoreMissingTrack = async (
+    album: AlbumGroup,
+    options: {
+      discNumber?: number;
+      trackNumber?: number;
+      ignore: boolean;
+      clearAll?: boolean;
+    }
+  ) => {
+    try {
+      await setMissingTrackIgnore({
+        albumId: album.id,
+        discNumber: options.discNumber ?? 0,
+        trackNumber: options.trackNumber ?? 0,
+        ignore: options.ignore,
+        clearAll: options.clearAll ?? false,
+      });
+      await fetchLibrary(debouncedQuery, { silent: true });
+      const isWholeAlbum =
+        (options.discNumber ?? 0) === 0 && (options.trackNumber ?? 0) === 0;
+      showToast(
+        "success",
+        options.ignore
+          ? isWholeAlbum
+            ? `Ignored missing tracks for "${album.title}"`
+            : `Ignored missing track #${options.trackNumber}`
+          : isWholeAlbum
+            ? `Re-enabled missing-track checks for "${album.title}"`
+            : `Restored missing track #${options.trackNumber}`
+      );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not update ignore status";
+      showToast("error", "Update failed", msg);
+    }
+  };
+
+  const handleBulkIgnoreMissingAlbums = async (
+    albums: AlbumGroup[],
+    ignore: boolean
+  ) => {
+    if (albums.length === 0) return;
+    try {
+      const res = await bulkSetMissingTrackIgnore(
+        albums.map((a) => a.id),
+        ignore
+      );
+      await fetchLibrary(debouncedQuery, { silent: true });
+      showToast(
+        "success",
+        ignore
+          ? `Ignored missing tracks on ${res.updated_count} ${
+              res.updated_count === 1 ? "album" : "albums"
+            }`
+          : `Re-enabled missing-track checks on ${res.updated_count} ${
+              res.updated_count === 1 ? "album" : "albums"
+            }`
+      );
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not update ignore status";
+      showToast("error", "Bulk update failed", msg);
+    }
+  };
+
+  const handleMoveMissingCandidate = async (
+    album: AlbumGroup,
+    missingItem: MissingTrackItem,
+    candidate: MissingTrackCandidate
+  ) => {
+    setMovingMissingPath(candidate.path);
+    try {
+      const sample = album.tracks[0];
+      const existingTrackTotal = album.tracks
+        .map((t) => t.track_number?.split("/")[1])
+        .find((tot) => tot && /^\d+$/.test(tot));
+      const existingDiscTotal = album.tracks
+        .map((t) => t.disc_number?.split("/")[1])
+        .find((tot) => tot && /^\d+$/.test(tot));
+
+      const trackNumberOverride =
+        missingItem.track_number > 0
+          ? existingTrackTotal
+            ? `${missingItem.track_number}/${existingTrackTotal}`
+            : String(missingItem.track_number)
+          : undefined;
+      const discNumberOverride =
+        missingItem.disc_number > 0
+          ? existingDiscTotal
+            ? `${missingItem.disc_number}/${existingDiscTotal}`
+            : missingItem.disc_number > 1
+              ? String(missingItem.disc_number)
+              : sample?.disc_number ?? undefined
+          : undefined;
+
+      const payload: AlbumMergePayload = {
+        paths: [candidate.path],
+        album: album.title,
+        album_artist: sample?.album_artist ?? album.artist,
+        year: album.year ?? sample?.year ?? null,
+        release_date: sample?.release_date ?? null,
+        genre: album.genre ?? sample?.genre ?? null,
+        album_version: sample?.album_version ?? null,
+        compilation: sample?.compilation ?? null,
+        musicbrainz_album_id:
+          sample?.musicbrainz_album_id ?? album.completeness_mbid ?? null,
+        musicbrainz_album_artist_id: sample?.musicbrainz_album_artist_id ?? null,
+        track_overrides:
+          trackNumberOverride || discNumberOverride
+            ? [
+                {
+                  path: candidate.path,
+                  track_number: trackNumberOverride ?? null,
+                  disc_number: discNumberOverride ?? null,
+                },
+              ]
+            : [],
+        artwork_source_path: album.cover_track_path,
+        reorganize: organizeSettings.enabled,
+        trigger_navidrome_scan: true,
+      };
+
+      const response = await mergeAlbums(payload);
+      setMissingSearchTarget(null);
+      setArtworkRevision((r) => r + 1);
+      await fetchLibrary(debouncedQuery, { silent: true });
+
+      if (response.errors.length > 0) {
+        showToast("error", "Could not move track", response.errors[0].error);
+      } else {
+        const details = [
+          response.artwork_applied ? "Adopted album artwork." : null,
+          response.moved.length > 0 ? "Moved file into album folder." : null,
+          formatNavidromeNote(response.navidrome_sync),
+        ]
+          .filter(Boolean)
+          .join(" ");
+        showToast(
+          "success",
+          `Moved "${candidate.title || candidate.filename}" into "${album.title}"`,
+          details || undefined
+        );
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Could not move track into album";
+      showToast("error", "Move failed", msg);
+    } finally {
+      setMovingMissingPath(null);
+    }
+  };
+
   if (authStatus === null) {
     return (
       <div className="flex h-full min-h-screen items-center justify-center bg-canvas text-xs text-ink-secondary">
@@ -1149,6 +1386,8 @@ export function App() {
           albumFilter={albumFilter}
           missingField={missingField}
           missingScope={missingScope}
+          showIgnoredMissing={showIgnoredMissing}
+          checkingCompletenessAlbumId={checkingCompletenessAlbumId}
           organizeEnabled={organizeSettings.enabled}
           artworkRevision={artworkRevision}
           loading={loading}
@@ -1159,6 +1398,13 @@ export function App() {
           onStartBulkEdit={handleStartBulkEdit}
           onIdentifyAlbum={handleIdentifyAlbum}
           onFindAlbumCover={handleFindAlbumCover}
+          onCheckCompleteness={handleCheckCompleteness}
+          onIgnoreMissingTrack={handleIgnoreMissingTrack}
+          onBulkIgnoreMissingAlbums={handleBulkIgnoreMissingAlbums}
+          onSearchLibraryForMissing={(album, item) =>
+            setMissingSearchTarget({ album, item })
+          }
+          onQuickMoveMissingCandidate={handleMoveMissingCandidate}
           onIdentifyTrack={handleIdentifyTrack}
           onDeleteTrack={(track) => setDeleteTarget(track)}
           onMergeAlbums={(albums) => setMergeAlbumsTarget(albums)}
@@ -1170,6 +1416,7 @@ export function App() {
           onChangeAlbumFilter={setAlbumFilter}
           onChangeMissingField={setMissingField}
           onChangeMissingScope={setMissingScope}
+          onChangeShowIgnoredMissing={setShowIgnoredMissing}
           onRescan={handleRescan}
         />
 
@@ -1268,6 +1515,21 @@ export function App() {
         moving={mergingAlbums}
         onClose={() => setMoveTracksTarget({ tracks: [], sourceAlbumId: null })}
         onConfirmMove={(payload) => handleConfirmMergeOrMove(payload, "move")}
+      />
+
+      <MissingTrackSearchModal
+        album={missingSearchTarget?.album ?? null}
+        missingItem={missingSearchTarget?.item ?? null}
+        movingPath={movingMissingPath}
+        onClose={() => setMissingSearchTarget(null)}
+        onMoveCandidate={handleMoveMissingCandidate}
+      />
+
+      <CompletenessCheckModal
+        album={completenessModalAlbum}
+        checkingMbid={checkingModalMbid}
+        onClose={() => setCompletenessModalAlbum(null)}
+        onSelectRelease={handleSelectCompletenessRelease}
       />
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
