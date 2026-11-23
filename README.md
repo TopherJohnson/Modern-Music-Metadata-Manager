@@ -7,15 +7,28 @@ M⁴ ships as a **single Docker container** (FastAPI backend + compiled React/Vi
 > [!NOTE]
 > **Disclaimer:** This project is **100% vibe coded** with AI assistance. Because M⁴ edits audio metadata and moves files directly on disk, keep backups of your music library and use at your own risk!
 
+<p align="center">
+  <img src="docs/screenshots/02_album_navidrome_split_warning.png" alt="M⁴ Album Diagnostics and Navidrome Split-Album Risk Warnings" width="95%" />
+</p>
+
 ---
 
 ## Features
 
 - **Navidrome Split-Album (`PID.Album`) & Near-Duplicate Detection:** Diagnostics for why Navidrome splits albums, plus automatic detection of near-duplicate album titles and shared-folder splits with one-click multi-album merge.
+
+<p align="center">
+  <img src="docs/screenshots/07_multi_album_merge_modal.png" alt="Multi-Album Merge and Cover Art Unification Modal" width="85%" />
+</p>
+
+- **MusicBrainz Identification (Album & Single Track):** Match albums or single tracks with Cover Art Archive previews, title-first track alignment supporting non-Latin (CJK/Unicode) scripts, and external MusicBrainz links.
+
+<p align="center">
+  <img src="docs/screenshots/03_musicbrainz_track_mapping_preview.png" alt="MusicBrainz Track-to-Release Mapping and Preview Modal" width="85%" />
+</p>
+
 - **Missing Track Detection & Ghost Rows:** Scans for sequence gaps and diffs albums against MusicBrainz releases to show missing tracks as muted "ghost rows", with local library stray search and one-click move.
 - **Optional Staging / Inbox Workspace (`M4_STAGING_DIR`):** Dedicated staging area for cleaning up and inspecting external downloads before moving them cleanly into your music library.
-- **Optional `slskd` (Soulseek) Integration:** Search peer-shared audio directly from missing track ghost rows, ranked by audio format match and duration closeness, with transfer monitoring.
-- **MusicBrainz Identification (Album & Single Track):** Match albums or single tracks with Cover Art Archive previews, title-first track alignment supporting non-Latin (CJK/Unicode) scripts, and external MusicBrainz links.
 - **Modern Responsive 3-Pane UI:** Draggable resizable panels (Artist list, Library/Album view, Metadata Inspector), column visibility toggles, library sorting options (artist, title, missing count, warning count), and collapsible album diagnostics.
 - **Library Folder & Sidecar Organizer:** Persisted per-library folder structure presets (`Artist/Album`, `Artist/Year - Album`, `Album`, `Album - Artist`), dry-run preview with collision detection, safe file moves, companion sidecar mover (`.lrc`, `.txt`, `cover.*`, `folder.*`, `.cue`, `.log`), and empty directory cleanup.
 - **Batch-Grouped Activity History & One-Click Undo:** Bulk tag edits, MusicBrainz album updates, and multi-file reorganizations are grouped into collapsible batches so you can revert an entire 99-file operation (including sidecars) in one click, or expand to inspect/undo individual files.
